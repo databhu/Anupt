@@ -29,22 +29,36 @@ def search_city(query):
     if not query or len(query) < 3:
         return []
 
-    url = "https://photon.komoot.io/api/"
-    params = {"q": query, "limit": 5}
-    headers = {"User-Agent": "astro-app"}
+    try:
+        url = "https://photon.komoot.io/api/"
+        params = {"q": query, "limit": 5}
+        headers = {"User-Agent": "astro-app"}
 
-    r = requests.get(url, params=params)
-    data = r.json()
+        r = requests.get(url, params=params, headers=headers, timeout=10)
 
-    cities = []
-    for f in data["features"]:
-        name = f["properties"].get("name", "")
-        state = f["properties"].get("state", "")
-        country = f["properties"].get("country", "")
-        label = f"{name}, {state}, {country}"
-        cities.append(label)
+        # check server response
+        if r.status_code != 200:
+            return []
 
-    return cities
+        # sometimes API returns text/html instead of json
+        if "application/json" not in r.headers.get("Content-Type", ""):
+            return []
+
+        data = r.json()
+
+        cities = []
+        for f in data.get("features", []):
+            name = f["properties"].get("name", "")
+            state = f["properties"].get("state", "")
+            country = f["properties"].get("country", "")
+            label = f"{name}, {state}, {country}"
+            cities.append(label)
+
+        return cities
+
+    except Exception as e:
+        return []
+
 
 
 # ============================================================
