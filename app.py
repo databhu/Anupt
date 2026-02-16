@@ -171,7 +171,12 @@ st.caption("Decode destiny using Astrology • Numerology • Tarot • Palm")
 
 name = st.text_input("Your Name")
 
-dob = st.date_input("Date of Birth")   # 📅 calendar
+dob = st.date_input(
+    "Date of Birth",
+    min_value=datetime.date(1900, 1, 1),
+    max_value=datetime.date.today()
+)# 📅 calendar
+
 tob = st.time_input("Time of Birth")   # ⏰ clock
 
 city_query = st.text_input("Type your birth city")
