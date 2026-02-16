@@ -204,11 +204,11 @@ pob = st.selectbox("Select city", suggestions) if suggestions else ""
 # ------------------------------------------------------------
 
 st.subheader("Left Palm")
-left_cam = st.camera_input("Take photo")
+left_cam = st.camera_input("Take photo", key="left_cam")
 left_up = st.file_uploader("or Upload", type=["jpg","png"], key="lu")
 
 st.subheader("Right Palm")
-right_cam = st.camera_input("Take photo")
+right_cam = st.camera_input("Take photo", key="right_cam")
 right_up = st.file_uploader("or Upload", type=["jpg","png"], key="ru")
 
 
