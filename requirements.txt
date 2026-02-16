@@ -4,6 +4,5 @@ pyswisseph
 timezonefinder
 pytz
 requests
-opencv-python
+opencv-python-headless
 numpy
-python-dateutil
