@@ -1,3 +1,10 @@
+pyswisseph 
+geopy 
+pytz 
+timezonefinder 
+datetime
+requests
+
 import swisseph as swe
 import datetime
 import pytz
