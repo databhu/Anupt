@@ -1,0 +1,196 @@
+import swisseph as swe
+import datetime
+import pytz
+from geopy.geocoders import Nominatim
+from timezonefinder import TimezoneFinder
+import ssl
+import certifi
+
+ssl._create_default_https_context = ssl.create_default_context(cafile=certifi.where())
+
+swe.set_ephe_path('.')
+
+
+# ------------------- LOCATION ENGINE -------------------
+
+import requests
+from timezonefinder import TimezoneFinder
+
+tf = TimezoneFinder()
+
+def get_lat_lon_timezone(place):
+    url = "https://photon.komoot.io/api/"
+    params = {
+        "q": place,
+        "limit": 1
+    }
+
+    r = requests.get(url, params=params, timeout=5)
+    r.raise_for_status()
+    data = r.json()
+
+    if not data["features"]:
+        raise ValueError("Invalid place name")
+
+    coords = data["features"][0]["geometry"]["coordinates"]
+    lon, lat = coords
+
+    timezone_str = tf.timezone_at(lat=lat, lng=lon)
+
+    return lat, lon, timezone_str
+
+
+
+# ------------------- JULIAN DATE ENGINE -------------------
+
+def get_julian_day(dob, tob, timezone):
+    local = pytz.timezone(timezone)
+    naive_dt = datetime.datetime.strptime(f"{dob} {tob}", "%Y-%m-%d %H:%M")
+    local_dt = local.localize(naive_dt)
+    utc_dt = local_dt.astimezone(pytz.utc)
+
+    jd = swe.julday(
+        utc_dt.year, utc_dt.month, utc_dt.day,
+        utc_dt.hour + utc_dt.minute / 60
+    )
+    return jd
+
+
+# ------------------- PLANET POSITIONS -------------------
+
+PLANETS = {
+    "Sun": swe.SUN,
+    "Moon": swe.MOON,
+    "Mars": swe.MARS,
+    "Mercury": swe.MERCURY,
+    "Jupiter": swe.JUPITER,
+    "Venus": swe.VENUS,
+    "Saturn": swe.SATURN,
+    "Rahu": swe.MEAN_NODE
+}
+
+SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+         "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+
+
+def get_sign(deg):
+    return SIGNS[int(deg // 30)]
+
+
+def get_planet_positions(jd):
+    positions = {}
+
+    for name, planet in PLANETS.items():
+        pos, _ = swe.calc_ut(jd, planet)
+        positions[name] = round(pos[0], 2)
+
+    positions["Ketu"] = round((positions["Rahu"] + 180) % 360, 2)
+
+    return positions
+
+
+# ------------------- LAGNA + HOUSES -------------------
+
+def get_lagna_and_houses(jd, lat, lon):
+    houses, ascmc = swe.houses(jd, lat, lon)
+    lagna = ascmc[0]
+    return round(lagna, 2), [round(h, 2) for h in houses]
+
+
+# ------------------- NAKSHATRA + DASHA -------------------
+
+NAKSHATRAS = [
+    "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra",
+    "Punarvasu", "Pushya", "Ashlesha", "Magha", "Purva Phalguni",
+    "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha",
+    "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha", "Uttara Ashadha",
+    "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
+    "Uttara Bhadrapada", "Revati"
+]
+
+DASHA_SEQUENCE = [
+    ("Ketu", 7), ("Venus", 20), ("Sun", 6), ("Moon", 10),
+    ("Mars", 7), ("Rahu", 18), ("Jupiter", 16),
+    ("Saturn", 19), ("Mercury", 17)
+]
+
+
+def get_nakshatra(moon_degree):
+    index = int(moon_degree // (360 / 27))
+    return NAKSHATRAS[index]
+
+
+def get_vimshottari_dasha(moon_degree):
+    nakshatra_index = int(moon_degree // (360 / 27))
+    lord_index = nakshatra_index % 9
+
+    return DASHA_SEQUENCE[lord_index][0]
+
+
+# ------------------- CURRENT TRANSITS -------------------
+
+def get_current_transits():
+    now = datetime.datetime.utcnow()
+    jd = swe.julday(now.year, now.month, now.day,
+                     now.hour + now.minute / 60)
+
+    return get_planet_positions(jd)
+
+
+# ------------------- MAIN ENGINE -------------------
+
+def generate_complete_astrology_report(name, dob, tob, pob):
+
+    lat, lon, timezone = get_lat_lon_timezone(pob)
+    jd = get_julian_day(dob, tob, timezone)
+
+    planets = get_planet_positions(jd)
+    lagna, houses = get_lagna_and_houses(jd, lat, lon)
+
+    moon_degree = planets["Moon"]
+    nakshatra = get_nakshatra(moon_degree)
+    mahadasha = get_vimshottari_dasha(moon_degree)
+
+    transits = get_current_transits()
+
+    report = {
+        "Name": name,
+        "DOB": dob,
+        "TOB": tob,
+        "POB": pob,
+        "Latitude": lat,
+        "Longitude": lon,
+        "Timezone": timezone,
+        "Lagna": get_sign(lagna),
+        "Lagna Degree": lagna,
+        "Planetary Positions": {
+            p: f"{deg}° {get_sign(deg)}" for p, deg in planets.items()
+        },
+        "Houses": {
+            f"House {i+1}": f"{deg}° {get_sign(deg)}"
+            for i, deg in enumerate(houses)
+        },
+        "Nakshatra": nakshatra,
+        "Current Mahadasha": mahadasha,
+        "Current Transits": {
+            p: f"{deg}° {get_sign(deg)}" for p, deg in transits.items()
+        }
+    }
+
+    return report
+
+
+# ------------------- RUN -------------------
+
+if __name__ == "__main__":
+    name = input("Enter Name: ")
+    dob = input("Enter DOB (YYYY-MM-DD): ")
+    tob = input("Enter TOB (HH:MM): ")
+    pob = input("Enter Place of Birth: ")
+
+    result = generate_complete_astrology_report(name, dob, tob, pob)
+
+    print("\n🔮 COMPLETE ASTROLOGY REPORT 🔮\n")
+
+    for k, v in result.items():
+        print(f"{k}: {v}")
