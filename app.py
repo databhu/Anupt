@@ -246,16 +246,29 @@ Structured Profile:
 Question:
 {question}
 
-Always give the detailed summary profile data of all the 4 engine segment
-based on question match the summary of profile data and
-Use astrology for destiny,
-numerology for life direction,
-tarot for situation,
-palm for strengths.
+Start every response with:
 
-Respond clearly and practically.
+Personality Overview
 
-At the end summaries all the responses based on the question asked in 2 to 3 lines
+Age
+
+A brief analysis summary of profile data
+
+Always provide a detailed summary profile covering all four engines:
+
+Astrology → Use for destiny, long-term patterns, and life themes.
+
+Numerology → Use for life direction, purpose, and karmic path.
+
+Tarot → Use for current situation, present energy, and short-term guidance.
+
+Palmistry → Use for strengths, talents, and natural abilities.
+
+Match the insights from all four systems to the specific question asked (career, marriage, finance, health, etc.).
+
+Respond clearly, practically, and directly. Avoid vague predictions. Focus on actionable insights.
+
+End every response with a concise 2–3 line summary strictly aligned with the question asked.
 """
 
     res = client.chat.completions.create(
