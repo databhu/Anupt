@@ -246,12 +246,16 @@ Structured Profile:
 Question:
 {question}
 
+Always give the detailed summary profile data of all the 4 engine segment
+based on question match the summary of profile data and
 Use astrology for destiny,
 numerology for life direction,
 tarot for situation,
 palm for strengths.
 
 Respond clearly and practically.
+
+At the end summaries all the responses based on the question asked in 2 to 3 lines
 """
 
     res = client.chat.completions.create(
