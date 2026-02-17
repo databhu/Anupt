@@ -250,7 +250,7 @@ Start every response with:
 
 Personality Overview
 
-Age
+Age calculate bases on DOB
 
 A brief analysis summary of profile data
 
@@ -269,6 +269,8 @@ Match the insights from all four systems to the specific question asked (career,
 Respond clearly, practically, and directly. Avoid vague predictions. Focus on actionable insights.
 
 End every response with a concise 2–3 line summary strictly aligned with the question asked.
+
+Add bullet point when and make headers in bold 
 """
 
     res = client.chat.completions.create(
