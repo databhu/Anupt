@@ -250,8 +250,6 @@ Start every response with:
 
 Personality Overview
 
-Age calculate bases on DOB
-
 A brief analysis summary of profile data
 
 Always provide a detailed summary profile covering all four engines:
@@ -285,7 +283,7 @@ Add bullet point when and make headers in bold
 # STREAMLIT UI
 # ============================================================
 
-st.title("🌟 ANUPT – Cosmic Intelligence")
+st.title("ANUPT – Cosmic Intelligence")
 
 name = st.text_input("Name")
 
