@@ -247,7 +247,7 @@ Question:
 {question}
 
 Start every response with:
-
+Direct ans to the question asked by user 
 Personality Overview
 
 A brief analysis summary of profile data
