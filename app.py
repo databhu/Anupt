@@ -1,6 +1,6 @@
 # ============================================================
-# ANUPT – COSMIC AI (FULL PRODUCTION SINGLE FILE)
-# Astrology + Numerology + Tarot + Palm + Structured Fusion
+# ANUPT – COSMIC AI
+# Astrology + Numerology + Tarot + Palm + AI Fusion
 # ============================================================
 
 import streamlit as st
@@ -11,8 +11,9 @@ import random
 import requests
 import numpy as np
 import cv2
+import time
 from timezonefinder import TimezoneFinder
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 # ============================================================
 # CONFIG
@@ -27,7 +28,7 @@ swe.set_sid_mode(swe.SIDM_LAHIRI)
 tf = TimezoneFinder()
 
 # ============================================================
-# UTILITY
+# UTIL
 # ============================================================
 
 SIGNS = [
@@ -39,30 +40,39 @@ def get_sign(deg: float) -> str:
     return SIGNS[int(deg // 30)]
 
 # ============================================================
-# CITY AUTOCOMPLETE (SAFE)
+# CITY SEARCH
 # ============================================================
 
 def search_city(query: str):
+
     if not query or len(query) < 3:
         return []
+
     try:
         url = "https://photon.komoot.io/api/"
         params = {"q": query, "limit": 5}
-        headers = {"User-Agent": "anupt-app"}
-        r = requests.get(url, params=params, headers=headers, timeout=5)
+
+        r = requests.get(url, params=params, timeout=5)
 
         if r.status_code != 200:
             return []
 
         data = r.json()
+
         results = []
+
         for f in data.get("features", []):
+
             name = f["properties"].get("name", "")
             state = f["properties"].get("state", "")
             country = f["properties"].get("country", "")
+
             label = f"{name}, {state}, {country}"
+
             results.append(label)
+
         return results
+
     except:
         return []
 
@@ -82,16 +92,25 @@ LETTER_MAP = {
     **dict.fromkeys(list("IR"), 9),
 }
 
-def reduce_number(n: int) -> int:
+def reduce_number(n):
+
     while n > 9 and n not in (11,22,33):
+
         n = sum(int(d) for d in str(n))
+
     return n
 
-def numerology_engine(name: str, dob: datetime.date):
+
+def numerology_engine(name, dob):
+
     dob_str = dob.strftime("%Y-%m-%d")
+
     life = reduce_number(sum(int(x) for x in dob_str if x.isdigit()))
+
     destiny = reduce_number(sum(LETTER_MAP.get(c,0) for c in name.upper() if c.isalpha()))
+
     current_year = datetime.datetime.now().year
+
     personal_year = reduce_number(
         sum(int(x) for x in dob_str[:7] if x.isdigit()) + current_year
     )
@@ -115,13 +134,17 @@ MAJOR_ARCANA = [
 ]
 
 def tarot_engine():
+
     deck = MAJOR_ARCANA.copy()
+
     random.shuffle(deck)
 
-    spread = []
     positions = ["Past","Present","Future"]
 
+    spread = []
+
     for i in range(3):
+
         spread.append({
             "position": positions[i],
             "card": deck[i],
@@ -145,13 +168,33 @@ PLANETS = {
     "Rahu": swe.MEAN_NODE
 }
 
-def astrology_engine(dob: datetime.date, tob: datetime.time, pob: str):
+def get_location(place):
+
+    url = "https://photon.komoot.io/api/"
+
+    params = {"q": place, "limit": 1}
+
+    r = requests.get(url, params=params, timeout=5)
+
+    data = r.json()
+
+    lon, lat = data["features"][0]["geometry"]["coordinates"]
+
+    tz = tf.timezone_at(lat=lat, lng=lon)
+
+    return float(lat), float(lon), tz
+
+
+def astrology_engine(dob, tob, pob):
 
     lat, lon, tz_name = get_location(pob)
 
     dt = datetime.datetime.combine(dob, tob)
+
     local = pytz.timezone(tz_name)
+
     dt_local = local.localize(dt)
+
     dt_utc = dt_local.astimezone(pytz.utc)
 
     jd = swe.julday(
@@ -162,9 +205,13 @@ def astrology_engine(dob: datetime.date, tob: datetime.time, pob: str):
     )
 
     planets_data = {}
+
     for name, planet in PLANETS.items():
+
         pos, _ = swe.calc_ut(jd, planet, swe.FLG_SIDEREAL)
+
         deg = float(round(pos[0],2))
+
         planets_data[name] = {
             "degree": deg,
             "sign": get_sign(deg)
@@ -176,39 +223,34 @@ def astrology_engine(dob: datetime.date, tob: datetime.time, pob: str):
     }
 
     houses, ascmc = swe.houses_ex(jd, lat, lon, b'P', swe.FLG_SIDEREAL)
+
     lagna_deg = float(round(ascmc[0],2))
 
     return {
-        "ascendant": {
-            "degree": lagna_deg,
-            "sign": get_sign(lagna_deg)
+        "ascendant":{
+            "degree":lagna_deg,
+            "sign":get_sign(lagna_deg)
         },
-        "planets": planets_data
+        "planets":planets_data
     }
 
-def get_location(place):
-    url = "https://photon.komoot.io/api/"
-    params = {"q": place, "limit": 1}
-    headers = {"User-Agent": "anupt"}
-    r = requests.get(url, params=params, headers=headers, timeout=5)
-    data = r.json()
-    lon, lat = data["features"][0]["geometry"]["coordinates"]
-    tz = tf.timezone_at(lat=lat, lng=lon)
-    return float(lat), float(lon), tz
-
 # ============================================================
-# PALM ENGINE
+# PALM
 # ============================================================
 
 def palm_engine(file):
+
     if file is None:
         return None, None
 
     bytes_data = np.asarray(bytearray(file.read()), dtype=np.uint8)
+
     img = cv2.imdecode(bytes_data, 1)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
     edges = cv2.Canny(gray, 50, 150)
+
     strength = np.sum(edges) / 255
 
     if strength > 15000:
@@ -219,124 +261,121 @@ def palm_engine(file):
         level = "faint"
 
     overlay = img.copy()
+
     h,w,_ = overlay.shape
 
     cv2.line(overlay,(int(w*0.2),int(h*0.8)),(int(w*0.5),int(h*0.4)),(0,0,255),3)
+
     cv2.line(overlay,(int(w*0.1),int(h*0.5)),(int(w*0.8),int(h*0.5)),(255,0,0),3)
+
     cv2.line(overlay,(int(w*0.1),int(h*0.3)),(int(w*0.8),int(h*0.25)),(0,255,0),3)
 
     return {
-        "life_line": level,
-        "head_line": level,
-        "heart_line": level
+        "life_line":level,
+        "head_line":level,
+        "heart_line":level
     }, overlay
 
 # ============================================================
-# AI FUSION
+# PROFILE FORMAT (REDUCES TOKENS)
 # ============================================================
 
-def ask_ai(profile_data, question):
+def format_profile(profile):
 
-    prompt = f"""
-You are a master advisor.
+    astro = profile["astrology"]
 
-Structured Profile:
-{profile_data}
+    num = profile["numerology"]
 
-Question:
-{question}
+    return f"""
+Ascendant: {astro['ascendant']['sign']}
 
-Start every response with:
+Sun: {astro['planets']['Sun']['sign']}
+Moon: {astro['planets']['Moon']['sign']}
 
-Personality Overview
-
-A brief analysis summary of profile data
-
-Always provide a detailed summary profile covering all four engines:
-
-Astrology → Use for destiny, long-term patterns, and life themes.
-
-Numerology → Use for life direction, purpose, and karmic path.
-
-Tarot → Use for current situation, present energy, and short-term guidance.
-
-Palmistry → Use for strengths, talents, and natural abilities.
-
-Match the insights from all four systems to the specific question asked (career, marriage, finance, health, etc.).
-
-Respond clearly, practically, and directly. Avoid vague predictions. Focus on actionable insights.
-
-End every response with a concise 2–3 line summary strictly aligned with the question asked.
-
-Add bullet point when and make headers in bold 
+Life Path: {num['life_path']}
+Destiny Number: {num['destiny']}
+Personal Year: {num['personal_year']}
 """
 
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role":"user","content":prompt}],
-        temperature=0.7
-    )
+# ============================================================
+# AI
+# ============================================================
 
-    return res.choices[0].message.content
+def ask_ai(profile_text, question):
+
+    prompt = f"""
+Profile
+{profile_text}
+
+Question
+{question}
+
+Use astrology, numerology, tarot and palmistry insights.
+
+Start with Personality Overview.
+Use bullet points.
+End with 2-3 line final summary.
+"""
+
+    for attempt in range(3):
+
+        try:
+
+            res = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role":"user","content":prompt}],
+                temperature=0.7
+            )
+
+            return res.choices[0].message.content
+
+        except RateLimitError:
+
+            time.sleep(5)
+
+    return "AI is busy. Try again."
 
 # ============================================================
-# STREAMLIT UI
+# UI
 # ============================================================
 
 st.title("ANUPT – Cosmic Intelligence")
 
 name = st.text_input("Name")
 
-dob = st.date_input(
-    "Date of Birth",
-    min_value=datetime.date(1900,1,1),
-    max_value=datetime.date.today()
-)
+dob = st.date_input("Date of Birth")
 
 tob = st.time_input("Time of Birth")
 
 city_query = st.text_input("Type birth city")
+
 suggestions = search_city(city_query)
+
 pob = st.selectbox("Select city", suggestions) if suggestions else ""
 
-st.subheader("Left Palm")
-left_cam = st.camera_input("Take photo (left)", key="left_cam")
-left_up = st.file_uploader("Or upload", type=["jpg","png"], key="left_upload")
+left = st.file_uploader("Left Palm", type=["jpg","png"])
 
-st.subheader("Right Palm")
-right_cam = st.camera_input("Take photo (right)", key="right_cam")
-right_up = st.file_uploader("Or upload", type=["jpg","png"], key="right_upload")
-
-def pick(cam, up):
-    return cam if cam else up
-
-left_file = pick(left_cam, left_up)
-right_file = pick(right_cam, right_up)
-
-if name and pob:
-    st.info(f"""
-    Confirm Details:
-    Name: {name}
-    DOB: {dob}
-    TOB: {tob}
-    POB: {pob}
-    """)
+right = st.file_uploader("Right Palm", type=["jpg","png"])
 
 if st.button("Generate Full Profile"):
 
-    astro = astrology_engine(dob, tob, pob)
-    num = numerology_engine(name, dob)
+    astro = astrology_engine(dob,tob,pob)
+
+    num = numerology_engine(name,dob)
+
     tarot = tarot_engine()
-    left_palm, left_overlay = palm_engine(left_file)
-    right_palm, right_overlay = palm_engine(right_file)
+
+    left_palm,_ = palm_engine(left)
+
+    right_palm,_ = palm_engine(right)
 
     profile = {
-        "astrology": astro,
-        "numerology": num,
-        "tarot": tarot,
-        "palm": {
-            "left": left_palm,
-            "right": right_palm
+        "astrology":astro,
+        "numerology":num,
+        "tarot":tarot,
+        "palm":{
+            "left":left_palm,
+            "right":right_palm
         }
     }
 
@@ -344,15 +383,29 @@ if st.button("Generate Full Profile"):
 
     st.success("Profile Generated")
 
-    if left_overlay is not None:
-        st.image(left_overlay, caption="Left Palm Lines")
-
-    if right_overlay is not None:
-        st.image(right_overlay, caption="Right Palm Lines")
+# ============================================================
 
 if "profile" in st.session_state:
+
     question = st.text_input("Ask your question")
 
     if st.button("Ask Universe"):
-        answer = ask_ai(st.session_state["profile"], question)
-        st.write(answer)
+
+        profile_text = format_profile(st.session_state["profile"])
+
+        if "last_call" not in st.session_state:
+
+            st.session_state.last_call = 0
+
+        if time.time() - st.session_state.last_call < 8:
+
+            st.warning("Please wait before asking again.")
+
+        else:
+
+            st.session_state.last_call = time.time()
+
+            answer = ask_ai(profile_text, question)
+
+            st.write(answer)
+            
