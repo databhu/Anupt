@@ -255,28 +255,28 @@ A brief analysis summary of profile data
 
 Always provide a detailed summary profile covering all four engines:
 
-Astrology → destiny and life themes  
-Numerology → life direction  
-Tarot → current situation  
-Palmistry → strengths and talents
+Astrology → Use for destiny, long-term patterns, and life themes.
+Numerology → Use for life direction, purpose, and karmic path.
+Tarot → Use for current situation, present energy, and short-term guidance.
+Palmistry → Use for strengths, talents, and natural abilities.
 
-End with a concise 2–3 line summary aligned with the question.
+End every response with a concise 2–3 line summary aligned with the question.
 """
 
-    for attempt in range(3):
-        try:
-            res = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role":"user","content":prompt}],
-                temperature=0.7
-            )
-            return res.choices[0].message.content
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.7
+        )
 
-        except RateLimitError:
-            time.sleep(5)
+        return res.choices[0].message.content
 
-    return "⚠️ AI is currently busy due to high traffic. Please try again in a few seconds."
+    except RateLimitError:
+        return "⚠️ API rate limit reached. Please wait a few seconds and try again."
 
+    except Exception as e:
+        return f"⚠️ AI Error: {str(e)}"
 # ============================================================
 # STREAMLIT UI
 # ============================================================
