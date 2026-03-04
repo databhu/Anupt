@@ -267,7 +267,7 @@ End with a concise 2–3 line summary aligned with the question.
     try:
 
         res = client.chat.completions.create(
-            model="llama3-70b-8192",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "user", "content": prompt}
             ],
