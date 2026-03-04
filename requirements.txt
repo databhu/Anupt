@@ -6,3 +6,4 @@ pytz
 requests
 opencv-python-headless
 numpy
+groq
