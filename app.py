@@ -343,7 +343,11 @@ st.title("ANUPT – Cosmic Intelligence")
 
 name = st.text_input("Name")
 
-dob = st.date_input("Date of Birth")
+dob = st.date_input(
+    "Date of Birth",
+    min_value=datetime.date(1900, 1, 1),
+    max_value=datetime.date.today()
+)
 
 tob = st.time_input("Time of Birth")
 
