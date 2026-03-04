@@ -11,16 +11,15 @@ import random
 import requests
 import numpy as np
 import cv2
-import time
 from timezonefinder import TimezoneFinder
-from openai import OpenAI, RateLimitError
+from groq import Groq
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-OPENAI_KEY = st.secrets["OPENAI_KEY"]
-client = OpenAI(api_key=OPENAI_KEY)
+GROQ_KEY = st.secrets["GROQ_API_KEY"]
+client = Groq(api_key=GROQ_KEY)
 
 swe.set_ephe_path(".")
 swe.set_sid_mode(swe.SIDM_LAHIRI)
@@ -233,7 +232,7 @@ def palm_engine(file):
     }, overlay
 
 # ============================================================
-# AI FUSION (FIXED RATE LIMIT)
+# AI FUSION (Llama-3 70B)
 # ============================================================
 
 def ask_ai(profile_data, question):
@@ -255,28 +254,31 @@ A brief analysis summary of profile data
 
 Always provide a detailed summary profile covering all four engines:
 
-Astrology → Use for destiny, long-term patterns, and life themes.
-Numerology → Use for life direction, purpose, and karmic path.
-Tarot → Use for current situation, present energy, and short-term guidance.
-Palmistry → Use for strengths, talents, and natural abilities.
+Astrology → destiny and life themes
+Numerology → life direction
+Tarot → current situation
+Palmistry → strengths and talents
 
-End every response with a concise 2–3 line summary aligned with the question.
+Respond clearly and practically.
+
+End with a concise 2–3 line summary aligned with the question.
 """
 
     try:
+
         res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.7
+            model="llama3-70b-8192",
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
         )
 
         return res.choices[0].message.content
 
-    except RateLimitError:
-        return "⚠️ API rate limit reached. Please wait a few seconds and try again."
-
     except Exception as e:
         return f"⚠️ AI Error: {str(e)}"
+
 # ============================================================
 # STREAMLIT UI
 # ============================================================
@@ -339,6 +341,7 @@ if st.button("Generate Full Profile"):
     }
 
     st.session_state["profile"] = profile
+
     st.success("Profile Generated")
 
     if left_overlay is not None:
@@ -353,3 +356,5 @@ if "profile" in st.session_state:
     if st.button("Ask Universe"):
         answer = ask_ai(st.session_state["profile"], question)
         st.write(answer)
+        
+        
