@@ -1,43 +1,37 @@
 """
-ANUPT — visual identity, v2: built around the real uploaded logo.
+ANUPT — visual identity, v3: modern premium light theme + bottom navigation.
 
-The logo fixed the brand for real: a magenta → indigo → blue gradient
-crest, gold sparkle accents, "Insights for a better you" as the tagline,
-and per-discipline color coding (numerology's circle is magenta,
-palmistry's is blue). This file now derives every token from that asset
-instead of an invented placeholder palette.
+Same brand hues as before (they were derived from the real uploaded logo,
+so they don't change), just re-balanced for a light surface instead of a
+night-sky one, and restructured around a mobile-app navigation pattern
+(slim sticky top bar + fixed bottom nav) instead of a desktop sidebar.
 
-Color (named, sampled from the logo — see assets/logo_full.png):
-  ink          #120C22  — night background (kept dark; logo has a
-                          transparent-safe crest so it now sits on it
-                          directly, no more text-only wordmark)
-  ink-panel    #1C1533  — raised surface
-  ink-line     #342A54  — hairline borders on ink
-  magenta      #C2157E  — gradient start (vivid, decorative use)
-  indigo       #4C1F93  — gradient mid (vivid, decorative use)
-  blue         #1857C4  — gradient end (vivid, decorative use)
-  gold         #C99A5E  — sparkle accent from the logo (text-safe, 7.5:1)
-  magenta-tint #E263A8  — lightened magenta for legible text/markers (6:1)
-  parchment    #F1ECFA  — reading text on dark surfaces
-  mist         #ADA1C9  — secondary/muted text
+Color (named):
+  bg           #FAF9FD  — page background (soft lavender-white, not sterile #FFF)
+  surface      #FFFFFF  — cards, panels
+  surface-alt  #F5F2FA  — subtle secondary surface (hover states, alt rows)
+  border       #E8E4EF  — hairlines
+  ink          #1D1830  — primary text (dark violet-black, not pure black)
+  mist         #6B6478  — secondary/muted text
+  magenta      #C2157E  — brand accent (5.4:1 on bg — safe for text too)
+  indigo       #4C1F93  — brand accent (10.4:1 on bg)
+  blue         #1857C4  — brand accent (6.3:1 on bg)
+  gold         #C99A5E  — decorative accent only (2.4:1 — not for text)
+  gold-text    #8C6530  — darkened gold for the few places gold needs to read as text (5.0:1)
 
-The three vivid brand hues (magenta/indigo/blue) read at 1.7–3.4:1
-against the ink background — fine for large fills, borders and the
-gradient logo itself, but not for text. Gold and the lightened magenta
-tint carry every place text needs AA contrast; that split is deliberate,
-not an oversight (see the contrast check this was built against).
-
-Old variable names (--brass, --brass-soft, --oxblood) are kept so the
-handful of inline `var(--brass-soft)` references already in app.py don't
-need touching — only their values changed, to the mapping above.
-
-Layout / restraint: the gradient itself is the signature element (it's
-the actual logo now, plus the primary button and the wordmark text) —
-everything else stays in flat gold/magenta-tint/indigo so the crest
-stays the one bold thing per the "spend your boldness in one place" rule.
+Layout: a slim sticky top bar (just the mark + wordmark) replaces the old
+full-hero-on-every-page pattern — the full hero now only appears once, on
+Home. Navigation moves from the old sidebar radio to a fixed bottom bar
+(st.container(key=...) pinned via CSS, real st.button widgets inside so
+clicks still work as ordinary Streamlit interactions — no custom JS
+component involved). Surface language stays varied by content type
+(scroll panel / medallions / tarot cards / hairline tables / the wheel)
+rather than flattening everything into one repeated card style.
 """
 
 import base64
+import html
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -49,98 +43,156 @@ def _b64(filename: str) -> str:
     return base64.b64encode((_ASSETS_DIR / filename).read_bytes()).decode("utf-8")
 
 
+def _prose_to_html(text: str) -> str:
+    """Defensive formatting for AI-generated text embedded as raw HTML (not markdown-
+    rendered by Streamlit in this context): escape it, then convert the handful of
+    markdown patterns models use out of habit despite being told not to (bold,
+    blank-line paragraph breaks) into real HTML, so a stray '**word**' never shows
+    up as literal asterisks on screen."""
+    escaped = html.escape(text.strip())
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", escaped) if p.strip()]
+    return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs) or f"<p>{escaped}</p>"
+
+
 _LOGO_MARK = _b64("logo_mark.png")
 
 SUIT_COLORS = {
-    "Wands": "#C99A5E",     # fire — gold, matches the logo's sparkle accent
+    "Wands": "#B8863F",     # fire — darkened gold, text-safe on a white card
     "Cups": "#1857C4",      # water — brand blue
-    "Swords": "#9AA0AE",    # air — neutral steel
-    "Pentacles": "#5C7A54", # earth — green (kept distinct from brand hues on purpose)
+    "Swords": "#6B7280",    # air — neutral steel
+    "Pentacles": "#3F6B3A", # earth — darkened green, text-safe
     None: "#4C1F93",        # Major Arcana — brand indigo
 }
+
+# Nav items shared between styling (icons) and app.py (routing) so the two
+# never drift apart. Tuple is (routing_key, material_icon, short_display_label) —
+# the routing key stays the full word (used throughout app.py's page routing and
+# reading-history labels); only the on-screen button text is shortened, since 7
+# full-length labels don't fit a phone-width bottom bar without truncating.
+NAV_ITEMS = [
+    ("Home", "home", "Home"),
+    ("Astrology", "travel_explore", "Astro"),
+    ("Numerology", "tag", "Nums"),
+    ("Palmistry", "back_hand", "Palm"),
+    ("Tarot", "style", "Tarot"),
+    ("ANUPT", "hub", "ANUPT"),
+    ("Profile", "person", "You"),
+]
 
 CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&display=swap');
 
 :root {
-    --ink: #120C22;
-    --ink-panel: #1C1533;
-    --ink-line: #342A54;
-    --brass: #C99A5E;        /* gold accent, from the logo's sparkle color */
-    --brass-soft: #DDBB86;   /* lighter gold, for emphasis text */
-    --oxblood: #E263A8;      /* legible magenta tint — markers, retrograde */
-    --parchment: #F1ECFA;
-    --mist: #ADA1C9;
-    --magenta: #C2157E;      /* vivid brand magenta — decorative/gradient only */
-    --indigo: #4C1F93;       /* vivid brand indigo — decorative/gradient only */
-    --blue: #1857C4;         /* vivid brand blue — decorative/gradient only */
+    --bg: #FAF9FD;
+    --surface: #FFFFFF;
+    --surface-alt: #F5F2FA;
+    --border: #E8E4EF;
+    --ink: #1D1830;
+    --mist: #6B6478;
+    --magenta: #C2157E;
+    --indigo: #4C1F93;
+    --blue: #1857C4;
+    --gold: #C99A5E;
+    --gold-text: #8C6530;
     --brand-gradient: linear-gradient(90deg, var(--magenta) 0%, var(--indigo) 55%, var(--blue) 100%);
+    /* legacy aliases so nothing else in the codebase needs to change names */
+    --brass: var(--gold-text);
+    --brass-soft: var(--indigo);
+    --oxblood: var(--magenta);
+    --parchment: var(--ink);
 }
 
 html, body, [class*="css"] { font-family: 'Manrope', sans-serif; }
 
-.stApp {
-    background:
-        radial-gradient(ellipse 900px 500px at 18% -8%, rgba(194,21,126,0.07), transparent 60%),
-        radial-gradient(ellipse 800px 500px at 85% 0%, rgba(24,87,196,0.06), transparent 55%),
-        var(--ink);
-    color: var(--parchment);
-}
+.stApp { background: var(--bg); color: var(--ink); }
 
-section[data-testid="stSidebar"] {
-    background: #0D0919;
-    border-right: 1px solid var(--ink-line);
-}
-section[data-testid="stSidebar"] * { color: var(--mist); }
-section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] h4 { color: var(--brass-soft) !important; }
+/* Streamlit's own sidebar is unused now (nav lives in the bottom bar) — hide it and its toggle */
+section[data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
 
-h1, h2, h3, h4 { font-family: 'Fraunces', serif !important; font-weight: 600; color: var(--parchment) !important; }
+h1, h2, h3, h4 { font-family: 'Fraunces', serif !important; font-weight: 600; color: var(--ink) !important; }
 h1 { font-weight: 700; }
 p, li, span, label, div { line-height: 1.55; }
 
-::selection { background: rgba(194,21,126,0.35); }
+::selection { background: rgba(194,21,126,0.18); }
 *:focus-visible { outline: 2px solid var(--magenta); outline-offset: 2px; }
 
-/* ---------- Hero (main page top) ---------- */
-.anupt-hero { text-align: center; padding: 0.3rem 1rem 1.3rem 1rem; border-bottom: 1px solid var(--ink-line); margin-bottom: 1.6rem; }
-.anupt-hero .hero-mark { width: 104px; height: auto; filter: drop-shadow(0 0 22px rgba(194,21,126,0.18)); margin-bottom: 0.3rem; }
-.anupt-hero .brand-word {
-    font-family: 'Fraunces', serif; font-optical-sizing: auto; font-weight: 700; font-size: 2.3rem;
-    background: var(--brand-gradient); -webkit-background-clip: text; background-clip: text; color: transparent;
-    letter-spacing: 0.03em; line-height: 1.1;
+/* Leave room at the bottom so the fixed nav never covers content */
+.block-container { padding-bottom: 6rem !important; padding-top: 1rem !important; max-width: 760px; }
+
+/* ---------- Slim sticky top bar (every page) ---------- */
+.st-key-topbar {
+    position: sticky; top: 0; z-index: 998;
+    background: rgba(250,249,253,0.92); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    margin: -1rem -1rem 1rem -1rem; padding: 0.55rem 1rem;
 }
-.anupt-hero .tagline { color: var(--mist); font-size: 1rem; font-style: italic; font-family: 'Fraunces', serif; margin-top: 0.2rem; }
+.anupt-topbar-inner { display: flex; align-items: center; gap: 0.5rem; max-width: 760px; margin: 0 auto; }
+.anupt-topbar-inner img { width: 26px; height: 26px; }
+.anupt-topbar-inner .word {
+    font-family: 'Fraunces', serif; font-weight: 700; font-size: 1.05rem;
+    background: var(--brand-gradient); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.anupt-topbar-inner .who { margin-left: auto; color: var(--mist); font-size: 0.82rem; }
+
+/* ---------- Hero (Home page only) ---------- */
+.anupt-hero { text-align: center; padding: 0.4rem 1rem 1.2rem 1rem; }
+.anupt-hero .hero-mark { width: 84px; height: auto; margin-bottom: 0.2rem; }
+.anupt-hero .brand-word {
+    font-family: 'Fraunces', serif; font-weight: 700; font-size: 1.9rem;
+    background: var(--brand-gradient); -webkit-background-clip: text; background-clip: text; color: transparent;
+    letter-spacing: 0.02em;
+}
+.anupt-hero .tagline { color: var(--mist); font-size: 0.95rem; font-style: italic; font-family: 'Fraunces', serif; margin-top: 0.1rem; }
 .anupt-hero .systems-line {
-    font-family: 'Manrope', sans-serif; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--brass); margin-top: 0.55rem;
+    font-family: 'Manrope', sans-serif; font-size: 0.66rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--gold-text); margin-top: 0.5rem;
 }
 
-/* ---------- Sidebar mark (compact) ---------- */
-.anupt-sidebar-mark { text-align: center; padding: 0.3rem 0 1.1rem 0; }
-.anupt-sidebar-mark img { width: 58px; height: auto; filter: drop-shadow(0 0 14px rgba(194,21,126,0.2)); }
-.anupt-sidebar-mark .sidebar-word {
-    font-family: 'Fraunces', serif; font-weight: 700; font-size: 1.25rem; margin-top: 0.3rem; letter-spacing: 0.03em;
-    background: var(--brand-gradient); -webkit-background-clip: text; background-clip: text; color: transparent;
+/* ---------- Fixed bottom navigation ---------- */
+.st-key-bottomnav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 999;
+    background: rgba(255,255,255,0.94); backdrop-filter: blur(14px);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 24px rgba(29,24,48,0.06);
+    padding: 0.3rem 0.3rem calc(0.3rem + env(safe-area-inset-bottom, 0px)) 0.3rem;
 }
+.st-key-bottomnav > div { max-width: 760px; margin: 0 auto; }
+.st-key-bottomnav [data-testid="stHorizontalBlock"] { gap: 0.1rem; align-items: stretch; flex-wrap: nowrap !important; }
+.st-key-bottomnav [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+.st-key-bottomnav .stButton { width: 100%; }
+.st-key-bottomnav .stButton > button {
+    background: transparent !important; border: none !important; box-shadow: none !important;
+    width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; color: var(--mist) !important; font-size: 0.6rem; font-weight: 600;
+    padding: 0.3rem 0.05rem !important; min-height: 3.1rem; border-radius: 12px !important;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.st-key-bottomnav .stButton > button:hover { background: var(--surface-alt) !important; }
+.st-key-bottomnav .stButton > button p {
+    font-size: 0.6rem !important; margin: 0 !important; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.st-key-bottomnav .stButton > button [data-testid="stIconMaterial"] { font-size: 1.15rem !important; }
+.st-key-bottomnav .stButton > button[kind="primary"] { color: var(--magenta) !important; background: rgba(194,21,126,0.08) !important; }
 
 /* ---------- Scroll panel (AI-written readings) ---------- */
 .anupt-scroll {
-    background: var(--ink-panel);
-    border-top: 2px solid var(--oxblood);
-    border-radius: 3px;
-    padding: 1.5rem 1.7rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--magenta);
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
     margin: 0.7rem 0 1.1rem 0;
-    color: var(--parchment);
+    color: var(--ink);
     font-family: 'Fraunces', serif;
-    font-size: 1.05rem;
+    font-size: 1.03rem;
     line-height: 1.75;
-    max-width: 74ch;
+    box-shadow: 0 2px 14px rgba(29,24,48,0.04);
 }
 .anupt-scroll::first-letter {
-    font-family: 'Fraunces', serif; font-size: 3.4rem; font-weight: 700; color: var(--magenta);
-    float: left; line-height: 0.8; padding-right: 0.5rem; padding-top: 0.4rem;
+    font-family: 'Fraunces', serif; font-size: 3.1rem; font-weight: 700; color: var(--magenta);
+    float: left; line-height: 0.8; padding-right: 0.5rem; padding-top: 0.3rem;
 }
 .anupt-scroll .scroll-label {
     font-family: 'Manrope', sans-serif; font-size: 0.72rem; color: var(--mist);
@@ -148,21 +200,56 @@ p, li, span, label, div { line-height: 1.55; }
 }
 
 /* ---------- Plain hairline tables ---------- */
-table.anupt-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 1.2rem 0; font-family: 'Manrope', sans-serif; font-size: 0.92rem; }
+table.anupt-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 1.2rem 0; font-family: 'Manrope', sans-serif; font-size: 0.92rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 table.anupt-table th {
     text-align: left; color: var(--mist); font-weight: 600; font-size: 0.78rem;
-    padding: 0.4rem 0.7rem; border-bottom: 1px solid var(--brass);
+    padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); background: var(--surface-alt);
 }
-table.anupt-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--ink-line); color: var(--parchment); }
+table.anupt-table td { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); color: var(--ink); }
 table.anupt-table tr:last-child td { border-bottom: none; }
-table.anupt-table .glyph { color: var(--brass-soft); font-size: 1.1rem; margin-right: 0.4rem; }
-table.anupt-table .retro { color: var(--oxblood); font-weight: 600; }
+table.anupt-table .retro { color: var(--magenta); font-weight: 600; }
 
-/* ---------- Theme-strength meter ---------- */
+/* ---------- Summary card (the concise, question-first answer) ---------- */
+.anupt-summary-card {
+    background: linear-gradient(165deg, rgba(194,21,126,0.06) 0%, rgba(24,87,196,0.05) 100%);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--magenta);
+    border-radius: 14px;
+    padding: 1.1rem 1.3rem;
+    margin: 0.7rem 0 1rem 0;
+    color: var(--ink);
+    animation: fade-up 0.35s ease-out both;
+}
+.anupt-summary-card .summary-label {
+    font-family: 'Manrope', sans-serif; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--magenta); font-weight: 700; margin-bottom: 0.4rem; display: block;
+}
+.anupt-summary-card .summary-text {
+    font-family: 'Fraunces', serif; font-size: 1.12rem; line-height: 1.6; font-weight: 500;
+}
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .anupt-summary-card { animation: none; } }
+
+/* ---------- Guidance / tip box (palm-photo instructions etc.) ---------- */
+.anupt-tips { background: var(--surface-alt); border: 1px solid var(--border); border-radius: 12px;
+    padding: 0.85rem 1rem; margin: 0.5rem 0 1rem 0; font-size: 0.85rem; color: var(--ink); }
+.anupt-tips ul { margin: 0.3rem 0 0 0; padding-left: 1.1rem; }
+.anupt-tips li { margin-bottom: 0.2rem; }
+
+/* ---------- ANUPT insight cards (combined page) ---------- */
+.anupt-insight-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.6rem; margin: 0.7rem 0 1rem 0; }
+.anupt-insight-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 0.85rem 0.9rem;
+    box-shadow: 0 2px 10px rgba(29,24,48,0.03); animation: fade-up 0.35s ease-out both;
+}
+.anupt-insight-card .ic-theme { font-family: 'Fraunces', serif; font-size: 0.98rem; color: var(--ink); font-weight: 600; }
+.anupt-insight-card .ic-dots { margin: 0.35rem 0; }
+.anupt-insight-card .ic-systems { font-size: 0.72rem; color: var(--mist); }
 .anupt-meter-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0; }
-.anupt-meter-label { font-family: 'Fraunces', serif; font-size: 0.98rem; color: var(--parchment); width: 9.5rem; flex-shrink: 0; }
+.anupt-meter-label { font-family: 'Fraunces', serif; font-size: 0.96rem; color: var(--ink); width: 9.5rem; flex-shrink: 0; }
 .anupt-meter-dots { display: flex; gap: 4px; }
-.anupt-meter-dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-line); display:inline-block; }
+.anupt-meter-dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--border); display:inline-block; }
 .anupt-meter-dots span.filled { background: var(--magenta); }
 .anupt-meter-systems { color: var(--mist); font-size: 0.8rem; }
 
@@ -171,60 +258,117 @@ table.anupt-table .retro { color: var(--oxblood); font-weight: 600; }
 .anupt-wheel-spin { transform-origin: center; animation: wheel-cast 1.1s cubic-bezier(.2,.7,.3,1) both; }
 @keyframes wheel-cast { from { opacity: 0; transform: rotate(-10deg) scale(0.94); } to { opacity: 1; transform: rotate(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) { .anupt-wheel-spin { animation: none; } }
-.wheel-ring-outer, .wheel-ring-inner, .wheel-ring-core { fill: none; stroke: var(--ink-line); stroke-width: 1.2; }
+.wheel-ring-outer, .wheel-ring-inner, .wheel-ring-core { fill: none; stroke: var(--border); stroke-width: 1.2; }
 .wheel-ring-outer { stroke: var(--indigo); stroke-width: 1.6; }
-.wheel-divider { stroke: var(--ink-line); stroke-width: 1; }
+.wheel-divider { stroke: var(--border); stroke-width: 1; }
 .wheel-sign-glyph { font-size: 17px; fill: var(--blue); font-family: 'Noto Sans Symbols2','Segoe UI Symbol','DejaVu Sans',sans-serif; }
 .wheel-house-num { font-size: 10.5px; fill: var(--mist); font-family: 'Manrope', sans-serif; }
-.wheel-planet { font-size: 16px; fill: var(--parchment); font-family: 'Noto Sans Symbols2','Segoe UI Symbol','DejaVu Sans',sans-serif; }
-.wheel-planet-retro { font-size: 16px; fill: var(--oxblood); font-family: 'Noto Sans Symbols2','Segoe UI Symbol','DejaVu Sans',sans-serif; }
+.wheel-planet { font-size: 16px; fill: var(--ink); font-family: 'Noto Sans Symbols2','Segoe UI Symbol','DejaVu Sans',sans-serif; }
+.wheel-planet-retro { font-size: 16px; fill: var(--magenta); font-family: 'Noto Sans Symbols2','Segoe UI Symbol','DejaVu Sans',sans-serif; }
 .wheel-asc-line { stroke: var(--magenta); stroke-width: 1.8; }
-.wheel-asc-label { font-size: 10px; fill: var(--oxblood); font-weight: 700; letter-spacing: 0.05em; }
-.wheel-core-label { font-size: 12.5px; fill: var(--brass-soft); font-family: 'Fraunces', serif; }
+.wheel-asc-label { font-size: 10px; fill: var(--magenta); font-weight: 700; letter-spacing: 0.05em; }
+.wheel-core-label { font-size: 12.5px; fill: var(--indigo); font-family: 'Fraunces', serif; }
 .wheel-core-sub { font-size: 9.5px; fill: var(--mist); }
 
-/* ---------- Numerology medallions (magenta — matches the logo's numerology circle) ---------- */
-.anupt-medallion-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 0.8rem; margin: 0.6rem 0 1.2rem 0; }
-.anupt-medallion { border: 1px solid var(--ink-line); border-radius: 4px; padding: 0.9rem 0.7rem; text-align: center; background: var(--ink-panel); }
-.anupt-medallion .med-num { font-family: 'Fraunces', serif; font-size: 2.1rem; font-weight: 700; color: var(--magenta); line-height: 1; }
-.anupt-medallion .med-name { font-size: 0.74rem; color: var(--mist); margin-top: 0.35rem; letter-spacing: 0.02em; }
+/* ---------- Numerology medallions ---------- */
+.anupt-medallion-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 0.7rem; margin: 0.6rem 0 1.2rem 0; }
+.anupt-medallion { border: 1px solid var(--border); border-radius: 14px; padding: 0.9rem 0.7rem; text-align: center;
+    background: var(--surface); box-shadow: 0 2px 10px rgba(29,24,48,0.03); }
+.anupt-medallion .med-num { font-family: 'Fraunces', serif; font-size: 2.05rem; font-weight: 700; color: var(--magenta); line-height: 1; }
+.anupt-medallion .med-name { font-size: 0.73rem; color: var(--mist); margin-top: 0.35rem; letter-spacing: 0.02em; }
 
-/* ---------- Tarot cards ---------- */
-.anupt-tarot-row { display: flex; gap: 0.9rem; flex-wrap: wrap; justify-content: center; margin: 0.6rem 0; }
+/* ---------- Tarot cards (light card face, suit-colored edge) ---------- */
+.anupt-tarot-row { display: flex; gap: 0.8rem; flex-wrap: wrap; justify-content: center; margin: 0.6rem 0; }
 .anupt-tarot-card {
-    width: 148px; aspect-ratio: 2 / 3.3;
-    background: linear-gradient(165deg, #1B1430 0%, #100B22 100%);
-    border-radius: 8px; padding: 0.85rem 0.6rem; text-align: center;
+    width: 140px; aspect-ratio: 2 / 3.3;
+    background: var(--surface);
+    border-radius: 10px; padding: 0.8rem 0.55rem; text-align: center;
     display: flex; flex-direction: column; justify-content: space-between;
-    position: relative;
+    position: relative; box-shadow: 0 3px 14px rgba(29,24,48,0.06);
 }
 .anupt-tarot-card::before {
-    content: ""; position: absolute; inset: 6px; border: 1px solid var(--card-suit-color, var(--indigo));
-    border-radius: 5px; pointer-events: none; opacity: 0.6;
+    content: ""; position: absolute; inset: 6px; border: 1.5px solid var(--card-suit-color, var(--indigo));
+    border-radius: 6px; pointer-events: none; opacity: 0.55;
 }
-.anupt-tarot-card .tarot-pos { color: var(--mist); font-size: 0.68rem; letter-spacing: 0.03em; }
-.anupt-tarot-card .tarot-name { font-family: 'Fraunces', serif; color: var(--parchment); font-size: 1rem; margin: 0.3rem 0; }
-.anupt-tarot-card .tarot-orient { color: var(--card-suit-color, var(--magenta)); font-size: 0.76rem; font-weight: 600; }
-.anupt-tarot-card .tarot-kw { color: var(--mist); font-size: 0.76rem; margin-top: 0.4rem; line-height: 1.4; }
+.anupt-tarot-card .tarot-pos { color: var(--mist); font-size: 0.66rem; letter-spacing: 0.03em; }
+.anupt-tarot-card .tarot-name { font-family: 'Fraunces', serif; color: var(--ink); font-size: 0.98rem; margin: 0.3rem 0; }
+.anupt-tarot-card .tarot-orient { color: var(--card-suit-color, var(--magenta)); font-size: 0.74rem; font-weight: 700; }
+.anupt-tarot-card .tarot-kw { color: var(--mist); font-size: 0.74rem; margin-top: 0.4rem; line-height: 1.4; }
+
+/* ---------- Cards (city suggestions, generic content cards) ---------- */
+.anupt-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 1rem 1.1rem; margin-bottom: 0.6rem; box-shadow: 0 2px 10px rgba(29,24,48,0.03); }
 
 /* ---------- Buttons & inputs ---------- */
 .stButton > button {
-    background: var(--brand-gradient); color: #FFFFFF; border: none; border-radius: 4px;
+    background: var(--brand-gradient); color: #FFFFFF; border: none; border-radius: 10px;
     font-weight: 700; font-family: 'Manrope', sans-serif; padding: 0.55rem 1.3rem; letter-spacing: 0.01em;
 }
-.stButton > button:hover { filter: brightness(1.1); }
+.stButton > button:hover { filter: brightness(1.08); }
 .stButton > button p { color: #FFFFFF !important; font-weight: 700 !important; }
+.stButton > button[kind="secondary"] {
+    background: var(--surface) !important; color: var(--ink) !important; border: 1px solid var(--border) !important;
+}
+.stButton > button[kind="secondary"] p { color: var(--ink) !important; }
 
-div[data-testid="stMetric"] { background: var(--ink-panel); border: 1px solid var(--ink-line); border-radius: 4px; padding: 0.6rem 0.8rem; }
+div[data-testid="stTextInput"] input, div[data-testid="stNumberInput"] input,
+div[data-testid="stDateInput"] input, div[data-testid="stTimeInput"] input {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--ink);
+}
+
+div[data-testid="stMetric"] { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem 0.8rem; }
 div[data-testid="stMetric"] label { color: var(--mist) !important; }
-div[data-testid="stMetric"] div { color: var(--brass-soft) !important; }
+div[data-testid="stMetric"] div { color: var(--indigo) !important; }
 
-div[data-testid="stChatMessage"] { background: var(--ink-panel); border: 1px solid var(--ink-line); border-radius: 6px; }
+div[data-testid="stChatMessage"] { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 
-hr, .anupt-divider { border: none; border-top: 1px solid var(--ink-line); margin: 1.2rem 0; }
+.stTabs [data-baseweb="tab"] { color: var(--mist); font-weight: 600; }
+.stTabs [aria-selected="true"] { color: var(--magenta) !important; }
 
-.anupt-disclaimer { font-size: 0.76rem; color: var(--mist); border-top: 1px solid var(--ink-line); padding-top: 0.6rem; margin-top: 1.5rem; }
+hr, .anupt-divider { border: none; border-top: 1px solid var(--border); margin: 1.2rem 0; }
+
+.anupt-disclaimer { font-size: 0.76rem; color: var(--mist); border-top: 1px solid var(--border); padding-top: 0.6rem; margin-top: 1.5rem; }
 .anupt-caption { color: var(--mist); font-size: 0.85rem; }
+.anupt-badge {
+    display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700;
+    background: var(--surface-alt); color: var(--indigo); border: 1px solid var(--border);
+}
+
+/* ---------- Touch & interaction polish ---------- */
+.stButton > button, .st-key-bottomnav .stButton > button { min-height: 44px; touch-action: manipulation; transition: filter 0.12s ease, background 0.12s ease; }
+.stButton > button:active { filter: brightness(0.94); }
+.st-key-bottomnav .stButton > button:active { background: var(--surface-alt) !important; }
+[data-testid="stExpander"] summary { min-height: 44px; display: flex; align-items: center; touch-action: manipulation; }
+div[data-testid="stRadio"] label, div[data-testid="stCheckbox"] label { min-height: 30px; touch-action: manipulation; }
+
+/* ---------- Mobile-width refinements (phones, ~480px and under) ---------- */
+@media (max-width: 480px) {
+    .block-container { padding-left: 0.9rem !important; padding-right: 0.9rem !important; }
+    .anupt-hero .brand-word { font-size: 1.6rem; }
+    .anupt-hero .hero-mark { width: 70px; }
+    h1 { font-size: 1.5rem !important; }
+    h2, .stApp h2 { font-size: 1.25rem !important; }
+    h3 { font-size: 1.1rem !important; }
+    .anupt-scroll, .anupt-summary-card { padding: 1rem 1.05rem; }
+    .anupt-summary-card .summary-text { font-size: 1.02rem; }
+    .anupt-medallion-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 0.5rem; }
+    .anupt-medallion .med-num { font-size: 1.7rem; }
+    .anupt-tarot-card { width: 118px; }
+    table.anupt-table { font-size: 0.82rem; }
+    table.anupt-table th, table.anupt-table td { padding: 0.45rem 0.55rem; }
+    .anupt-meter-label { width: 7rem; font-size: 0.86rem; }
+}
+
+/* ---------- Small-phone refinements (≤360px) ---------- */
+@media (max-width: 360px) {
+    .anupt-tarot-row { gap: 0.5rem; }
+    .anupt-tarot-card { width: 100px; padding: 0.6rem 0.4rem; }
+    .st-key-bottomnav .stButton > button { font-size: 0.55rem; }
+}
+
+/* Never allow horizontal scroll from an oversized child */
+.stApp, .block-container { overflow-x: hidden; }
+img, svg { max-width: 100%; height: auto; }
 </style>
 """
 
@@ -233,8 +377,21 @@ def inject():
     st.markdown(CSS, unsafe_allow_html=True)
 
 
+def top_bar(who: str | None = None):
+    """Slim sticky header shown on every page — replaces the old sidebar brand mark."""
+    who_html = f'<span class="who">{who}</span>' if who else ""
+    with st.container(key="topbar"):
+        st.markdown(
+            f"""<div class="anupt-topbar-inner">
+            <img src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT" />
+            <span class="word">ANUPT</span>{who_html}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
 def hero():
-    """Main page-top brand mark: real logo crest + gradient wordmark + the logo's own tagline copy."""
+    """Full brand moment — Home page only now, not repeated on every page."""
     st.markdown(
         f"""<div class="anupt-hero">
         <img class="hero-mark" src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT emblem" />
@@ -246,27 +403,76 @@ def hero():
     )
 
 
-def sidebar_mark():
-    """Compact sidebar version — just the crest and wordmark, no tagline (space is tight)."""
+def _set_nav(key: str):
+    """on_click callback: runs BEFORE the automatic rerun Streamlit already performs
+    after any button click, so the very next script pass already reflects the new
+    page — no manual st.rerun() needed, and no risk of a click needing to land twice
+    for the page to actually change (the old 'detect the return value, then rerun'
+    pattern this replaced was correct in theory but this is the pattern Streamlit
+    itself recommends for state-driven navigation, and removes an extra rerun)."""
+    st.session_state.nav = key
+
+
+def bottom_nav(active: str):
+    """Renders the fixed bottom navigation bar. Each button updates
+    st.session_state.nav directly via on_click — callers don't need to do
+    anything with a return value or call st.rerun() themselves."""
+    with st.container(key="bottomnav"):
+        cols = st.columns(len(NAV_ITEMS))
+        for col, (key, icon, short_label) in zip(cols, NAV_ITEMS):
+            is_active = key == active
+            with col:
+                st.button(
+                    f":material/{icon}: {short_label}", key=f"nav_{key}",
+                    type="primary" if is_active else "secondary",
+                    on_click=_set_nav, args=(key,),
+                )
+
+
+def scroll_panel(label: str, text: str):
+    """The AI-written reading surface — illuminated drop-cap opening. `text` is
+    the AI's plain-prose output, converted defensively (see _prose_to_html)."""
     st.markdown(
-        f"""<div class="anupt-sidebar-mark">
-        <img src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT" />
-        <div class="sidebar-word">ANUPT</div>
-        </div>""",
+        f"""<div class="anupt-scroll"><span class="scroll-label">{label}</span>{_prose_to_html(text)}</div>""",
         unsafe_allow_html=True,
     )
 
 
-def scroll_panel(label: str, html_body: str):
-    """The AI-written reading surface — illuminated drop-cap opening, parchment-on-ink."""
+def summary_card(label: str, text: str):
+    """The concise, question-first answer — shown before the detailed/expandable content."""
     st.markdown(
-        f"""<div class="anupt-scroll"><span class="scroll-label">{label}</span>{html_body}</div>""",
+        f"""<div class="anupt-summary-card"><span class="summary-label">{label}</span>
+        <div class="summary-text">{_prose_to_html(text)}</div></div>""",
         unsafe_allow_html=True,
     )
+
+
+def tips_box(title: str, tips: list):
+    """Short guidance list, e.g. how to photograph a palm well."""
+    items = "".join(f"<li>{t}</li>" for t in tips)
+    st.markdown(
+        f"""<div class="anupt-tips"><b>{title}</b><ul>{items}</ul></div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def insight_grid(cards: list):
+    """cards: list of (theme_label, strength, systems_list) — the ANUPT combined page's
+    visual theme-strength grid, a more engaging alternative to a plain list of meters."""
+    html = ""
+    for theme_label, strength, systems in cards:
+        filled = {"strong": 3, "moderate": 2, "weak": 1, "none": 0}.get(strength, 0)
+        dots = "".join(f'<span class="{"filled" if i < filled else ""}"></span>' for i in range(3))
+        sys_txt = ", ".join(systems) if systems else "no signal yet"
+        html += (
+            f'<div class="anupt-insight-card"><div class="ic-theme">{theme_label}</div>'
+            f'<div class="ic-dots anupt-meter-dots">{dots}</div>'
+            f'<div class="ic-systems">{sys_txt}</div></div>'
+        )
+    st.markdown(f'<div class="anupt-insight-grid">{html}</div>', unsafe_allow_html=True)
 
 
 def strength_meter(theme_label: str, strength: str, systems: list) -> str:
-    """Three-dot meter."""
     filled = {"strong": 3, "moderate": 2, "weak": 1, "none": 0}.get(strength, 0)
     dots = "".join(f'<span class="{"filled" if i < filled else ""}"></span>' for i in range(3))
     sys_txt = ", ".join(systems) if systems else "no signal"
@@ -276,7 +482,6 @@ def strength_meter(theme_label: str, strength: str, systems: list) -> str:
 
 
 def table(headers: list, rows: list) -> str:
-    """Plain hairline HTML table — used instead of st.dataframe for full style control."""
     head = "".join(f"<th>{h}</th>" for h in headers)
     body = ""
     for row in rows:
@@ -286,7 +491,6 @@ def table(headers: list, rows: list) -> str:
 
 
 def medallion_grid(items: list) -> str:
-    """items: list of (number, label) tuples — numerology display, magenta to match the logo's numerology circle."""
     cells = "".join(
         f'<div class="anupt-medallion"><div class="med-num">{num}</div>'
         f'<div class="med-name">{label}</div></div>'

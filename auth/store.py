@@ -91,6 +91,16 @@ def init_db():
                 narrative TEXT
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS palm_photos (
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                hand TEXT NOT NULL,
+                image_bytes BYTEA NOT NULL,
+                mime_type TEXT NOT NULL,
+                uploaded_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (user_id, hand)
+            )
+        """)
 
 
 def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
@@ -201,9 +211,46 @@ def account_created_at(user_id: int) -> str | None:
     return row["created_at"].isoformat() if row else None
 
 
+def save_palm_photo(user_id: int, hand: str, image_bytes: bytes, mime_type: str):
+    """hand is 'left' or 'right'. Overwrites any previous photo for that hand —
+    one stored photo per hand per account, matching the profile's own upsert pattern."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO palm_photos (user_id, hand, image_bytes, mime_type, uploaded_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, hand) DO UPDATE SET
+                image_bytes=EXCLUDED.image_bytes, mime_type=EXCLUDED.mime_type,
+                uploaded_at=EXCLUDED.uploaded_at
+        """, (user_id, hand, psycopg2.Binary(image_bytes), mime_type, datetime.now(timezone.utc)))
+
+
+def get_palm_photo(user_id: int, hand: str) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT image_bytes, mime_type, uploaded_at FROM palm_photos WHERE user_id = %s AND hand = %s",
+            (user_id, hand),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "image_bytes": bytes(row["image_bytes"]), "mime_type": row["mime_type"],
+        "uploaded_at": row["uploaded_at"].isoformat(),
+    }
+
+
+def delete_palm_photo(user_id: int, hand: str):
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM palm_photos WHERE user_id = %s AND hand = %s", (user_id, hand))
+
+
 def delete_account(user_id: int):
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM readings WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM palm_photos WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM profiles WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))

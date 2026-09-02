@@ -1,20 +1,34 @@
 """
-ANUPT — AI Writer (Gemini)
+ANUPT — AI writer, on Google Gemini.
 
-Strict separation of concerns: every function here receives already-computed,
-structured, deterministic evidence from the engines and is only asked to
-write and correlate — never to invent a planetary position, a numerology
-number, or a card draw. Palm vision reading is the one exception where the
-"feature extraction" itself is AI-assisted (see engines/palmistry.py) — that
-is always labeled as such in the UI.
+Same job as before, different provider: every function here receives
+already-computed, structured, deterministic evidence from the engines and
+is only asked to write and correlate — never to invent a planetary
+position, a numerology number, or a card draw.
 
-Uses the plain REST endpoint so no SDK version pinning is required.
-Default model is configurable — Gemini model names change over time, so the
-UI exposes the model field rather than hardcoding one permanently.
+The API key is entirely backend configuration — never a UI field, never
+logged or shown to the person using the app. It comes from GEMINI_API_KEY
+(Streamlit secrets or an environment variable); the model is a fixed
+constant here, not user-selectable. See README.md for where to set the key.
+
+Model choice: gemini-2.5-flash. Google's free tier only covers Flash-class
+models (Pro requires billing) — Flash is the stable, widely-documented,
+non-preview name that's consistently still free as of this build, and it's
+natively multimodal (handles the palmistry photo the same call shape as
+text). GEMINI_MODEL is an optional backend override, never a user setting.
+
+Free-tier rate limits (roughly 10 requests/minute, a few hundred/day) are
+handled two ways: keep every response short — max_tokens is deliberately
+modest, which also serves the "concise summary" product requirement — and
+recognize HTTP 429 specifically to show "you're going a bit fast, give it
+a moment" instead of a generic error.
 """
 
 import base64
 import json
+import os
+import time as _time
+
 import requests
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -32,43 +46,122 @@ SYSTEM_GUARDRAILS = (
     "guaranteed factual outcome.\n"
     "4. Avoid unsafe high-stakes advice (medical, legal, financial-investment "
     "certainty) — encourage the user to consult a relevant professional for those.\n"
-    "5. Keep tone encouraging, honest, and grounded — not vague fortune-cookie text."
+    "5. Keep tone encouraging, honest, and grounded — not vague fortune-cookie text.\n"
+    "6. Write in plain prose only — no markdown (**, __, #, bullet dashes, etc.), "
+    "since your output is displayed as-is, not rendered from markdown. Use plain "
+    "paragraph breaks (a blank line) instead of headings or emphasis marks."
 )
 
+_FRIENDLY_UNAVAILABLE = (
+    "⚠️ The AI reading service isn't available right now — the calculated data above "
+    "is still fully accurate. Please try again shortly, or let the app owner know if "
+    "this keeps happening."
+)
+_FRIENDLY_RATE_LIMITED = (
+    "⚠️ Lots of requests right now — please wait a few seconds and try again. "
+    "The calculated data above is still fully accurate in the meantime."
+)
 
-def _endpoint(model: str) -> str:
-    return f"{API_BASE}/{model}:generateContent"
+# Simple in-process throttle: free-tier RPM is tight (~10/min), so if two calls land
+# within this many seconds of each other we wait rather than firing both and eating
+# a 429. This is a courtesy spacing, not a hard queue — it only smooths bursts from
+# a single running app instance.
+_MIN_INTERVAL_SECONDS = 2.0
+_last_call_at = 0.0
 
 
-def _call(model: str, api_key: str, contents: list, system_instruction: str | None = None) -> str:
-    if not api_key:
-        return ("⚠️ No Gemini API key set. Add your key in the sidebar to enable "
-                "AI-written interpretations — the calculated data above is still "
-                "fully accurate without it.")
-    payload = {"contents": contents}
-    if system_instruction:
-        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-    payload["generationConfig"] = {"temperature": 0.8, "maxOutputTokens": 1600}
-
+def _get_api_key() -> str | None:
+    key = os.environ.get("GEMINI_API_KEY")
+    if key:
+        return key
     try:
-        resp = requests.post(
-            _endpoint(model), params={"key": api_key}, json=payload, timeout=TIMEOUT
-        )
+        import streamlit as st
+        return st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        return None
+
+
+def _get_model() -> str:
+    """Never user-facing — an optional backend override (GEMINI_MODEL) for when
+    Google retires DEFAULT_MODEL, not a setting anyone using the app ever sees."""
+    model = os.environ.get("GEMINI_MODEL")
+    if model:
+        return model
+    try:
+        import streamlit as st
+        return st.secrets.get("GEMINI_MODEL") or DEFAULT_MODEL
+    except Exception:
+        return DEFAULT_MODEL
+
+
+def _throttle():
+    global _last_call_at
+    elapsed = _time.monotonic() - _last_call_at
+    if elapsed < _MIN_INTERVAL_SECONDS:
+        _time.sleep(_MIN_INTERVAL_SECONDS - elapsed)
+    _last_call_at = _time.monotonic()
+
+
+def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900) -> str:
+    api_key = _get_api_key()
+    if not api_key:
+        return _FRIENDLY_UNAVAILABLE
+
+    _throttle()
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system}]},
+        "generationConfig": {"temperature": 0.8, "maxOutputTokens": max_tokens},
+    }
+    url = f"{API_BASE}/{_get_model()}:generateContent"
+    try:
+        resp = requests.post(url, params={"key": api_key}, json=payload, timeout=TIMEOUT)
+        if resp.status_code == 429:
+            return _FRIENDLY_RATE_LIMITED
         if resp.status_code != 200:
-            return f"⚠️ AI request failed ({resp.status_code}): {resp.text[:300]}"
+            return _FRIENDLY_UNAVAILABLE
         data = resp.json()
         candidates = data.get("candidates", [])
         if not candidates:
-            return "⚠️ The AI returned no content — it may have blocked this prompt. Try again."
+            return _FRIENDLY_UNAVAILABLE
         parts = candidates[0].get("content", {}).get("parts", [])
-        return "".join(p.get("text", "") for p in parts).strip() or "⚠️ Empty AI response."
-    except requests.exceptions.RequestException as e:
-        return f"⚠️ Couldn't reach the Gemini API: {e}"
+        text = "".join(p.get("text", "") for p in parts)
+        return text.strip() or _FRIENDLY_UNAVAILABLE
+    except requests.exceptions.RequestException:
+        return _FRIENDLY_UNAVAILABLE
 
 
-def generate_unified_narrative(model: str, api_key: str, reading_type: str,
-                                unified_evidence: dict, question: str | None = None) -> str:
-    """Combined mode: synthesize across all engines using the Unified Insight Engine's evidence."""
+def _user_turn(text: str) -> dict:
+    return {"role": "user", "parts": [{"text": text}]}
+
+
+_SPLIT_INSTRUCTION = (
+    "\n\nRespond in exactly this two-part format, with that literal '---SPLIT---' "
+    "line between the parts and nothing else on that line:\n"
+    "A 2-3 sentence direct, concrete answer — no preamble, no restating the question, "
+    "just the meaning in plain warm language.\n"
+    "---SPLIT---\n"
+    "A fuller reading (2-4 short paragraphs) going deeper into the same evidence."
+)
+
+
+def _split_summary_and_details(text: str) -> tuple[str, str]:
+    """One generation call produces both the short summary and the fuller reading —
+    not two separate calls — since free-tier rate limits make every extra request
+    costly. Falls back gracefully if the model didn't use the exact delimiter."""
+    if "---SPLIT---" in text:
+        summary, details = text.split("---SPLIT---", 1)
+        return summary.strip(), details.strip()
+    # Fallback: no delimiter found — use the whole thing as details and a
+    # truncated version as the summary, so the UI never ends up with nothing.
+    stripped = text.strip()
+    summary = stripped[:280] + ("…" if len(stripped) > 280 else "")
+    return summary, stripped
+
+
+def generate_unified_narrative(reading_type: str, unified_evidence: dict, question: str | None = None) -> str:
+    """Combined mode, full narrative only (used by Home's quick 'today' card, which
+    doesn't need the summary/details split)."""
     prompt = (
         f"Reading type: {reading_type}.\n"
         + (f"User's specific question: {question}\n" if question else "")
@@ -79,13 +172,29 @@ def generate_unified_narrative(model: str, api_key: str, reading_type: str,
         "then one grounded closing reflection. Do not restate raw numbers — translate them "
         "into meaning."
     )
-    return _call(model, api_key, [{"role": "user", "parts": [{"text": prompt}]}], SYSTEM_GUARDRAILS)
+    return _call([_user_turn(prompt)], max_tokens=1100)
 
 
-def generate_single_engine_narrative(model: str, api_key: str, engine_name: str,
-                                      engine_data: dict, reading_type: str,
+def generate_unified_reading(reading_type: str, unified_evidence: dict,
+                              question: str | None = None) -> tuple[str, str]:
+    """ANUPT combined page: one call, returns (summary, details)."""
+    prompt = (
+        f"Reading type: {reading_type}.\n"
+        + (f"User's specific question: {question}\n" if question else "")
+        + "Structured cross-system evidence — Astrology, Numerology, Tarot, and "
+        "Palmistry when a palm reading is included (JSON):\n"
+        + json.dumps(unified_evidence, indent=2, default=str)
+        + _SPLIT_INSTRUCTION
+        + "\nThe fuller part should name which systems agree on each point you raise, "
+        "including the palm reading if 'palmistry' is present in the evidence."
+    )
+    text = _call([_user_turn(prompt)], max_tokens=1200)
+    return _split_summary_and_details(text)
+
+
+def generate_single_engine_narrative(engine_name: str, engine_data: dict, reading_type: str,
                                       question: str | None = None) -> str:
-    """Single-engine mode: interpret only one system's structured output, no cross-referencing."""
+    """Full narrative only, single engine (kept for the reading-history/full-text case)."""
     prompt = (
         f"Reading type: {reading_type}. Engine: {engine_name} ONLY — do not reference "
         f"other systems, this is a single-engine reading by the user's choice.\n"
@@ -94,15 +203,30 @@ def generate_single_engine_narrative(model: str, api_key: str, engine_name: str,
         + json.dumps(engine_data, indent=2, default=str)
         + f"\n\nWrite a clear, warm {engine_name} reading based only on this data."
     )
-    return _call(model, api_key, [{"role": "user", "parts": [{"text": prompt}]}], SYSTEM_GUARDRAILS)
+    return _call([_user_turn(prompt)], max_tokens=900)
 
 
-def chat_reply(model: str, api_key: str, history: list, question: str, context_evidence: dict) -> str:
+def generate_engine_reading(engine_name: str, engine_data: dict, reading_type: str,
+                             question: str | None = None) -> tuple[str, str]:
+    """Single-engine page (Astrology/Numerology/Tarot): one call, returns (summary, details) —
+    the summary answers the question directly, details are there for whoever wants to explore."""
+    prompt = (
+        f"Reading type: {reading_type}. Engine: {engine_name} ONLY — do not reference "
+        f"other systems, this is a single-engine reading by the user's choice.\n"
+        + (f"User's question: {question}\n" if question else "User asked for a general read.\n")
+        + f"Structured {engine_name} data (JSON):\n"
+        + json.dumps(engine_data, indent=2, default=str)
+        + _SPLIT_INSTRUCTION
+    )
+    text = _call([_user_turn(prompt)], max_tokens=1000)
+    return _split_summary_and_details(text)
+
+
+def chat_reply(history: list, question: str, context_evidence: dict) -> str:
     """
     AI Astrologer chat. `history` is a list of {"role": "user"|"model", "text": str}.
     `context_evidence` should already be filtered to what's relevant to the question
-    (topic-specific selection happens in app.py, not here) — this function does not
-    decide relevance, it only writes from what it's handed.
+    (topic-specific selection happens in app.py, not here).
     """
     contents = []
     for turn in history[-10:]:
@@ -111,26 +235,28 @@ def chat_reply(model: str, api_key: str, history: list, question: str, context_e
         "Relevant structured evidence for this question (JSON):\n"
         + json.dumps(context_evidence, indent=2, default=str) + "\n\nQuestion: "
     )
-    contents.append({"role": "user", "parts": [{"text": context_prefix + question}]})
-    return _call(model, api_key, contents, SYSTEM_GUARDRAILS)
+    contents.append(_user_turn(context_prefix + question))
+    return _call(contents, max_tokens=700)
 
 
-def palm_vision_reading(model: str, api_key: str, image_bytes: bytes, mime_type: str,
-                         hand_label: str) -> str:
+def palm_vision_reading(image_bytes: bytes, mime_type: str, hand_label: str,
+                         question: str | None = None) -> tuple[str, str]:
     """
-    The one AI-assisted feature-extraction step (see engines/palmistry.py docstring
-    for why). Always clearly labeled 'AI-assisted' in the UI, never claimed as a
-    deterministic measurement.
+    AI-assisted feature extraction for palmistry — see engines/palmistry.py's
+    docstring for why this is the one AI-vision-assisted step. Always labeled
+    'AI-assisted' in the UI, never claimed as a deterministic measurement.
+    One call, returns (summary, details) — same pattern as the other engines.
     """
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     prompt = (
         f"This is a photo of a {hand_label} palm submitted to a palmistry app. "
-        "Identify what you can observe about the major lines (Life, Head, Heart, "
-        "Fate, Sun if visible), general mounts, and finger/thumb proportions. "
-        "Then give a brief traditional palmistry interpretation. Be honest about "
-        "uncertainty — if a feature isn't clearly visible in the image, say so "
-        "rather than guessing confidently. Frame this as spiritual/personal-reflection "
-        "guidance, not a factual or medical claim."
+        + (f"The user specifically asked: {question}\n" if question else "User asked for a general read.\n")
+        + "First, silently note what you can observe about the major lines (Life, Head, "
+        "Heart, Fate, Sun if visible), general mounts, and finger/thumb proportions — "
+        "be honest if a feature isn't clearly visible rather than guessing confidently. "
+        "Then give a traditional palmistry interpretation from those observations."
+        + _SPLIT_INSTRUCTION
+        + "\nFrame both parts as spiritual/personal-reflection guidance, not a factual or medical claim."
     )
     contents = [{
         "role": "user",
@@ -139,4 +265,5 @@ def palm_vision_reading(model: str, api_key: str, image_bytes: bytes, mime_type:
             {"inline_data": {"mime_type": mime_type, "data": b64}},
         ],
     }]
-    return _call(model, api_key, contents, SYSTEM_GUARDRAILS)
+    text = _call(contents, max_tokens=1000)
+    return _split_summary_and_details(text)

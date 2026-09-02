@@ -1,9 +1,7 @@
 streamlit>=1.62.0
 pyswisseph>=2.10.3.2
-timezonefinder>=8.3.0
-pytz>=2026.3
+tzdata>=2026.1
 Pillow>=12.1.1
 numpy>=2.4.4
-geopy>=2.5.0
 requests>=2.33.1
 psycopg2-binary>=2.9.12

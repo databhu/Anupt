@@ -83,10 +83,16 @@ def tarot_signal(cards: list) -> dict:
     return {t: round(v / total, 3) for t, v in signal.items()}, contributions
 
 
-def synthesize(numerology_profile: dict, chart: dict, cards: list) -> dict:
+def synthesize(numerology_profile: dict, chart: dict, cards: list, palm_summary: str | None = None) -> dict:
     """
     Combine the three deterministic engines into a unified, theme-scored,
     evidence-backed structure. This is what gets handed to the AI writer.
+
+    `palm_summary`, when available, is folded in as additional context for
+    the AI writer — palmistry's reading is AI-vision text, not a structured
+    deterministic signal like the other three, so it doesn't participate in
+    the theme scoring below, but the writer still sees it and can weave it
+    into the combined narrative when it's provided.
     """
     num_sig, num_evidence = numerology_signal(numerology_profile)
     astro_sig, astro_evidence = astrology_signal(chart)
@@ -122,13 +128,18 @@ def synthesize(numerology_profile: dict, chart: dict, cards: list) -> dict:
     ranked_themes = sorted(THEMES, key=lambda t: combined[t]["score"], reverse=True)
     top_theme = ranked_themes[0]
 
+    evidence = {
+        "numerology": num_evidence,
+        "astrology": astro_evidence,
+        "tarot": tarot_evidence,
+    }
+    if palm_summary:
+        evidence["palmistry"] = {"ai_reading_summary": palm_summary}
+
     return {
         "theme_scores": combined,
         "ranked_themes": ranked_themes,
         "top_theme": top_theme,
-        "evidence": {
-            "numerology": num_evidence,
-            "astrology": astro_evidence,
-            "tarot": tarot_evidence,
-        },
+        "evidence": evidence,
+        "palmistry_included": bool(palm_summary),
     }
