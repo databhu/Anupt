@@ -102,7 +102,17 @@ CSS = """
     --brass-soft: var(--indigo);
     --oxblood: var(--magenta);
     --parchment: var(--ink);
+    /* Responsive content width: a comfortable single-column reading width on
+       phones, growing on wider screens so desktop/tablet actually uses the
+       space instead of sitting in a narrow centered strip with huge empty
+       margins either side (that was the whole "web view too limited" bug).
+       Top bar, main content and bottom nav all reference this one variable
+       so they stay visually aligned as they grow together. */
+    --content-max: 760px;
 }
+@media (min-width: 900px)  { :root { --content-max: 900px; } }
+@media (min-width: 1200px) { :root { --content-max: 1040px; } }
+@media (min-width: 1600px) { :root { --content-max: 1160px; } }
 
 html, body, [class*="css"] { font-family: 'Manrope', sans-serif; }
 
@@ -119,7 +129,7 @@ p, li, span, label, div { line-height: 1.55; }
 *:focus-visible { outline: 2px solid var(--magenta); outline-offset: 2px; }
 
 /* Leave room at the bottom so the fixed nav never covers content */
-.block-container { padding-bottom: 6rem !important; padding-top: 1rem !important; max-width: 760px; }
+.block-container { padding-bottom: 6rem !important; padding-top: 1rem !important; max-width: var(--content-max) !important; margin-left: auto !important; margin-right: auto !important; }
 
 /* ---------- Slim sticky top bar (every page) ---------- */
 .st-key-topbar {
@@ -128,7 +138,7 @@ p, li, span, label, div { line-height: 1.55; }
     border-bottom: 1px solid var(--border);
     margin: -1rem -1rem 1rem -1rem; padding: 0.55rem 1rem;
 }
-.anupt-topbar-inner { display: flex; align-items: center; gap: 0.5rem; max-width: 760px; margin: 0 auto; }
+.anupt-topbar-inner { display: flex; align-items: center; gap: 0.5rem; max-width: var(--content-max); margin: 0 auto; }
 .anupt-topbar-inner img { width: 26px; height: 26px; }
 .anupt-topbar-inner .word {
     font-family: 'Fraunces', serif; font-weight: 700; font-size: 1.05rem;
@@ -158,23 +168,23 @@ p, li, span, label, div { line-height: 1.55; }
     box-shadow: 0 -6px 24px rgba(29,24,48,0.06);
     padding: 0.3rem 0.3rem calc(0.3rem + env(safe-area-inset-bottom, 0px)) 0.3rem;
 }
-.st-key-bottomnav > div { max-width: 760px; margin: 0 auto; }
+.st-key-bottomnav > div { max-width: var(--content-max); margin: 0 auto; }
 .st-key-bottomnav [data-testid="stHorizontalBlock"] { gap: 0.1rem; align-items: stretch; flex-wrap: nowrap !important; }
 .st-key-bottomnav [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
 .st-key-bottomnav .stButton { width: 100%; }
-.st-key-bottomnav .stButton > button {
+.st-key-bottomnav .stButton button {
     background: transparent !important; border: none !important; box-shadow: none !important;
     width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 1px; color: var(--mist) !important; font-size: 0.6rem; font-weight: 600;
     padding: 0.3rem 0.05rem !important; min-height: 3.1rem; border-radius: 12px !important;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.st-key-bottomnav .stButton > button:hover { background: var(--surface-alt) !important; }
-.st-key-bottomnav .stButton > button p {
+.st-key-bottomnav .stButton button:hover { background: var(--surface-alt) !important; }
+.st-key-bottomnav .stButton button p {
     font-size: 0.6rem !important; margin: 0 !important; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
-.st-key-bottomnav .stButton > button [data-testid="stIconMaterial"] { font-size: 1.15rem !important; }
-.st-key-bottomnav .stButton > button[kind="primary"] { color: var(--magenta) !important; background: rgba(194,21,126,0.08) !important; }
+.st-key-bottomnav .stButton button span[role="img"] { font-size: 1.15rem !important; }
+.st-key-bottomnav .stButton button[kind="primary"] { color: var(--magenta) !important; background: rgba(194,21,126,0.08) !important; }
 
 /* ---------- Scroll panel (AI-written readings) ---------- */
 .anupt-scroll {
@@ -300,16 +310,16 @@ table.anupt-table .retro { color: var(--magenta); font-weight: 600; }
     padding: 1rem 1.1rem; margin-bottom: 0.6rem; box-shadow: 0 2px 10px rgba(29,24,48,0.03); }
 
 /* ---------- Buttons & inputs ---------- */
-.stButton > button {
+.stButton button {
     background: var(--brand-gradient); color: #FFFFFF; border: none; border-radius: 10px;
     font-weight: 700; font-family: 'Manrope', sans-serif; padding: 0.55rem 1.3rem; letter-spacing: 0.01em;
 }
-.stButton > button:hover { filter: brightness(1.08); }
-.stButton > button p { color: #FFFFFF !important; font-weight: 700 !important; }
-.stButton > button[kind="secondary"] {
+.stButton button:hover { filter: brightness(1.08); }
+.stButton button p { color: #FFFFFF !important; font-weight: 700 !important; }
+.stButton button[kind="secondary"] {
     background: var(--surface) !important; color: var(--ink) !important; border: 1px solid var(--border) !important;
 }
-.stButton > button[kind="secondary"] p { color: var(--ink) !important; }
+.stButton button[kind="secondary"] p { color: var(--ink) !important; }
 
 div[data-testid="stTextInput"] input, div[data-testid="stNumberInput"] input,
 div[data-testid="stDateInput"] input, div[data-testid="stTimeInput"] input {
@@ -329,15 +339,21 @@ hr, .anupt-divider { border: none; border-top: 1px solid var(--border); margin: 
 
 .anupt-disclaimer { font-size: 0.76rem; color: var(--mist); border-top: 1px solid var(--border); padding-top: 0.6rem; margin-top: 1.5rem; }
 .anupt-caption { color: var(--mist); font-size: 0.85rem; }
+/* ---------- Compact inline utility buttons (e.g. the Home page's quick Edit link) ---------- */
+.st-key-home_edit_profile .stButton button {
+    padding: 0.35rem 0.7rem !important; font-size: 0.8rem !important; min-height: 38px;
+}
+.st-key-home_edit_profile .stButton button p { font-size: 0.8rem !important; }
+
 .anupt-badge {
     display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700;
     background: var(--surface-alt); color: var(--indigo); border: 1px solid var(--border);
 }
 
 /* ---------- Touch & interaction polish ---------- */
-.stButton > button, .st-key-bottomnav .stButton > button { min-height: 44px; touch-action: manipulation; transition: filter 0.12s ease, background 0.12s ease; }
-.stButton > button:active { filter: brightness(0.94); }
-.st-key-bottomnav .stButton > button:active { background: var(--surface-alt) !important; }
+.stButton button, .st-key-bottomnav .stButton button { min-height: 44px; touch-action: manipulation; transition: filter 0.12s ease, background 0.12s ease; }
+.stButton button:active { filter: brightness(0.94); }
+.st-key-bottomnav .stButton button:active { background: var(--surface-alt) !important; }
 [data-testid="stExpander"] summary { min-height: 44px; display: flex; align-items: center; touch-action: manipulation; }
 div[data-testid="stRadio"] label, div[data-testid="stCheckbox"] label { min-height: 30px; touch-action: manipulation; }
 
@@ -359,11 +375,28 @@ div[data-testid="stRadio"] label, div[data-testid="stCheckbox"] label { min-heig
     .anupt-meter-label { width: 7rem; font-size: 0.86rem; }
 }
 
-/* ---------- Small-phone refinements (≤360px) ---------- */
-@media (max-width: 360px) {
+/* ---------- Small-phone refinements (≤400px): icon-only nav ---------- */
+@media (max-width: 400px) {
     .anupt-tarot-row { gap: 0.5rem; }
     .anupt-tarot-card { width: 100px; padding: 0.6rem 0.4rem; }
-    .st-key-bottomnav .stButton > button { font-size: 0.55rem; }
+    /* 7 full icon+label buttons don't reliably fit this narrow without wrapping/
+       truncating (verified: breaks at 320px even with a smaller font) — icon-only
+       is the robust fix rather than chasing ever-smaller font sizes. The full name
+       is still available as a tooltip/accessible label via the button's `help=`.
+       Note: Streamlit nests the icon <span> INSIDE the label <p>, so `display:none`
+       on the <p> would hide the icon too (it did — caught in visual QA). Collapsing
+       the <p> to font-size:0 hides only the text while the icon span keeps its own
+       explicit size. */
+    .st-key-bottomnav .stButton button p { font-size: 0 !important; line-height: 1 !important; }
+    .st-key-bottomnav .stButton button { min-height: 48px; padding: 0.4rem 0.1rem !important; }
+    .st-key-bottomnav .stButton button span[role="img"] { font-size: 1.4rem !important; }
+}
+
+/* ---------- Wider bottom nav breathing room on tablet/desktop ---------- */
+@media (min-width: 700px) {
+    .st-key-bottomnav .stButton button { font-size: 0.72rem; min-height: 3.4rem; }
+    .st-key-bottomnav .stButton button p { font-size: 0.72rem !important; }
+    .st-key-bottomnav .stButton button span[role="img"] { font-size: 1.35rem !important; }
 }
 
 /* Never allow horizontal scroll from an oversized child */
@@ -416,7 +449,11 @@ def _set_nav(key: str):
 def bottom_nav(active: str):
     """Renders the fixed bottom navigation bar. Each button updates
     st.session_state.nav directly via on_click — callers don't need to do
-    anything with a return value or call st.rerun() themselves."""
+    anything with a return value or call st.rerun() themselves.
+    Every button carries its full name as a `help` tooltip: on very narrow
+    phones the CSS hides the on-screen label to stop it wrapping/truncating
+    (icon-only there), so the tooltip/accessible-name is what keeps the
+    button's purpose available rather than silently dropping the label."""
     with st.container(key="bottomnav"):
         cols = st.columns(len(NAV_ITEMS))
         for col, (key, icon, short_label) in zip(cols, NAV_ITEMS):
@@ -425,7 +462,7 @@ def bottom_nav(active: str):
                 st.button(
                     f":material/{icon}: {short_label}", key=f"nav_{key}",
                     type="primary" if is_active else "secondary",
-                    on_click=_set_nav, args=(key,),
+                    on_click=_set_nav, args=(key,), help=key,
                 )
 
 

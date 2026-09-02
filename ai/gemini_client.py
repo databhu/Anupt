@@ -11,29 +11,46 @@ logged or shown to the person using the app. It comes from GEMINI_API_KEY
 (Streamlit secrets or an environment variable); the model is a fixed
 constant here, not user-selectable. See README.md for where to set the key.
 
-Model choice: gemini-2.5-flash. Google's free tier only covers Flash-class
-models (Pro requires billing) — Flash is the stable, widely-documented,
-non-preview name that's consistently still free as of this build, and it's
-natively multimodal (handles the palmistry photo the same call shape as
-text). GEMINI_MODEL is an optional backend override, never a user setting.
+Model choice: prefers gemini-2.5-flash (Google's free tier covers Flash-class
+models; Pro needs billing), but does NOT hard-depend on it. Google retires
+model aliases regularly, so on startup the client asks the API which models
+the key can actually use and picks the best available Flash-class one; if a
+call still 404s, it re-discovers and retries once. GEMINI_MODEL pins a
+specific model and skips discovery — a backend override, never a user setting.
 
 Free-tier rate limits (roughly 10 requests/minute, a few hundred/day) are
 handled two ways: keep every response short — max_tokens is deliberately
 modest, which also serves the "concise summary" product requirement — and
 recognize HTTP 429 specifically to show "you're going a bit fast, give it
 a moment" instead of a generic error.
+
+Errors: users always see a calm, non-technical message, but the real cause
+(HTTP status, API error body, which model failed) goes to the server log so
+the app owner can actually diagnose it. diagnose() exposes the same check
+from the Profile page for when log access is inconvenient.
 """
 
 import base64
 import json
+import logging
 import os
+import re
 import time as _time
 
 import requests
 
-API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+API_BASE = f"{API_ROOT}/models"
+# Starting preference only — NOT a hard dependency. Google retires model aliases
+# regularly (gemini-1.5-*, gemini-pro and even gemini-2.5-* have all returned 404
+# on v1beta at various points), so if this name isn't available to the key in use,
+# _resolve_model() discovers a working one from the live ListModels endpoint
+# instead of failing. That's the difference between "the app breaks when Google
+# renames something" and "the app keeps working".
 DEFAULT_MODEL = "gemini-2.5-flash"
 TIMEOUT = 45
+
+log = logging.getLogger("anupt.gemini")
 
 SYSTEM_GUARDRAILS = (
     "You are the AI writer for ANUPT, a spiritual-reflection app. You will be given "
@@ -81,17 +98,94 @@ def _get_api_key() -> str | None:
         return None
 
 
-def _get_model() -> str:
-    """Never user-facing — an optional backend override (GEMINI_MODEL) for when
-    Google retires DEFAULT_MODEL, not a setting anyone using the app ever sees."""
+def _configured_model() -> str | None:
+    """Explicit backend override (GEMINI_MODEL). Never user-facing. When set, it's
+    used as-is and no discovery happens — the operator has said exactly what they want."""
     model = os.environ.get("GEMINI_MODEL")
     if model:
         return model
     try:
         import streamlit as st
-        return st.secrets.get("GEMINI_MODEL") or DEFAULT_MODEL
+        return st.secrets.get("GEMINI_MODEL") or None
     except Exception:
-        return DEFAULT_MODEL
+        return None
+
+
+def _model_sort_key(name: str):
+    """Rank candidate models: prefer flash (free-tier friendly), then the highest
+    version number, then stable over dated/preview builds."""
+    version = 0.0
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    if m:
+        try:
+            version = float(m.group(1))
+        except ValueError:
+            version = 0.0
+    is_flash = "flash" in name
+    # A bare alias like "gemini-2.5-flash" is preferable to "…-flash-001" / "-preview-…"
+    is_bare = not re.search(r"(preview|exp|\d{3,}|latest)", name)
+    return (is_flash, version, is_bare)
+
+
+def _discover_models(api_key: str) -> list[str]:
+    """Ask the API which models this key can actually use with generateContent.
+    Returns bare model names (no 'models/' prefix), best candidate first."""
+    try:
+        resp = requests.get(f"{API_BASE}", params={"key": api_key, "pageSize": 200}, timeout=15)
+        if resp.status_code != 200:
+            log.warning("ListModels failed: HTTP %s %s", resp.status_code, resp.text[:300])
+            return []
+        names = []
+        for m in resp.json().get("models", []):
+            if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                continue
+            name = (m.get("name") or "").removeprefix("models/")
+            # Skip specialist variants that can't serve general text+vision readings
+            if any(bad in name for bad in ("embedding", "aqa", "tts", "imagen", "veo", "live")):
+                continue
+            if name:
+                names.append(name)
+        names.sort(key=_model_sort_key, reverse=True)
+        return names
+    except requests.exceptions.RequestException as e:
+        log.warning("ListModels request error: %s", e)
+        return []
+
+
+_resolved_model: str | None = None
+
+
+def _resolve_model(api_key: str, force_refresh: bool = False) -> str:
+    """The model actually used for calls. Explicit override wins; otherwise use
+    DEFAULT_MODEL if the key really has it, else the best discovered alternative.
+    Cached per process so we don't call ListModels on every reading."""
+    global _resolved_model
+    override = _configured_model()
+    if override:
+        return override
+    if _resolved_model and not force_refresh:
+        return _resolved_model
+
+    available = _discover_models(api_key)
+    if not available:
+        # Discovery failed (network/key problem) — fall back to the compiled-in
+        # default so a transient ListModels blip doesn't take the feature down.
+        _resolved_model = DEFAULT_MODEL
+    elif DEFAULT_MODEL in available:
+        _resolved_model = DEFAULT_MODEL
+    else:
+        _resolved_model = available[0]
+        log.warning(
+            "Preferred model %r unavailable for this key; using %r instead. Available: %s",
+            DEFAULT_MODEL, _resolved_model, ", ".join(available[:8]),
+        )
+    return _resolved_model
+
+
+def _get_model() -> str:
+    """Back-compat shim for anything still calling the old name."""
+    key = _get_api_key()
+    return _resolve_model(key) if key else (_configured_model() or DEFAULT_MODEL)
 
 
 def _throttle():
@@ -102,9 +196,15 @@ def _throttle():
     _last_call_at = _time.monotonic()
 
 
+def _post_once(api_key: str, model: str, payload: dict):
+    url = f"{API_BASE}/{model}:generateContent"
+    return requests.post(url, params={"key": api_key}, json=payload, timeout=TIMEOUT)
+
+
 def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900) -> str:
     api_key = _get_api_key()
     if not api_key:
+        log.error("GEMINI_API_KEY is not set — no AI readings will be generated.")
         return _FRIENDLY_UNAVAILABLE
 
     _throttle()
@@ -113,22 +213,81 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
         "systemInstruction": {"parts": [{"text": system}]},
         "generationConfig": {"temperature": 0.8, "maxOutputTokens": max_tokens},
     }
-    url = f"{API_BASE}/{_get_model()}:generateContent"
+    model = _resolve_model(api_key)
     try:
-        resp = requests.post(url, params={"key": api_key}, json=payload, timeout=TIMEOUT)
+        resp = _post_once(api_key, model, payload)
+
+        # A 404 here almost always means the model alias was retired or isn't
+        # available to this key. Re-discover once and retry rather than showing
+        # the user an error for something we can fix ourselves.
+        if resp.status_code == 404:
+            log.warning("Model %r returned 404; re-discovering available models.", model)
+            new_model = _resolve_model(api_key, force_refresh=True)
+            if new_model != model:
+                log.warning("Retrying with %r.", new_model)
+                resp = _post_once(api_key, new_model, payload)
+
         if resp.status_code == 429:
+            log.info("Gemini rate limited (429).")
             return _FRIENDLY_RATE_LIMITED
         if resp.status_code != 200:
+            # Full detail to the server log (visible to the app owner in
+            # Streamlit Cloud's "Manage app" logs) — never to the end user.
+            log.error("Gemini HTTP %s for model %r: %s",
+                      resp.status_code, model, resp.text[:500])
             return _FRIENDLY_UNAVAILABLE
+
         data = resp.json()
         candidates = data.get("candidates", [])
         if not candidates:
+            log.error("Gemini returned no candidates. Response: %s", json.dumps(data)[:500])
             return _FRIENDLY_UNAVAILABLE
         parts = candidates[0].get("content", {}).get("parts", [])
         text = "".join(p.get("text", "") for p in parts)
-        return text.strip() or _FRIENDLY_UNAVAILABLE
-    except requests.exceptions.RequestException:
+        if not text.strip():
+            finish = candidates[0].get("finishReason")
+            log.error("Gemini returned empty text (finishReason=%s).", finish)
+            return _FRIENDLY_UNAVAILABLE
+        return text.strip()
+    except requests.exceptions.RequestException as e:
+        log.error("Gemini request failed: %s", e)
         return _FRIENDLY_UNAVAILABLE
+
+
+def diagnose() -> dict:
+    """Owner-facing connectivity check, surfaced in Profile → Settings.
+    Returns plain status info (never the key itself) so a deployment problem
+    can be identified without digging through server logs."""
+    api_key = _get_api_key()
+    result = {
+        "api_key_configured": bool(api_key),
+        "model_override": _configured_model(),
+        "preferred_model": DEFAULT_MODEL,
+    }
+    if not api_key:
+        result["status"] = "No GEMINI_API_KEY found in secrets or environment."
+        return result
+
+    available = _discover_models(api_key)
+    result["models_visible_to_key"] = len(available)
+    result["example_models"] = available[:8]
+    if not available:
+        result["status"] = ("Couldn't list models — the key may be invalid, restricted, "
+                            "or the Generative Language API isn't enabled for its project.")
+        return result
+
+    model = _resolve_model(api_key, force_refresh=True)
+    result["model_in_use"] = model
+    try:
+        resp = _post_once(api_key, model, {
+            "contents": [{"role": "user", "parts": [{"text": "Reply with the single word: ok"}]}],
+            "generationConfig": {"maxOutputTokens": 10},
+        })
+        result["test_call_http_status"] = resp.status_code
+        result["status"] = "Working" if resp.status_code == 200 else f"Test call failed: {resp.text[:200]}"
+    except requests.exceptions.RequestException as e:
+        result["status"] = f"Test call could not reach the API: {e}"
+    return result
 
 
 def _user_turn(text: str) -> dict:

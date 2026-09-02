@@ -23,7 +23,7 @@ from ai import gemini_client
 from utils import styling, chart_svg, geocoding
 from auth import store as auth_store
 
-st.set_page_config(page_title="ANUPT", page_icon="assets/logo_mark.png", layout="centered",
+st.set_page_config(page_title="ANUPT", page_icon="assets/logo_mark.png", layout="wide",
                     initial_sidebar_state="collapsed")
 styling.inject()
 
@@ -58,6 +58,7 @@ defaults = {
     "tarot_last": None,
     "palm_last": None,        # {"left": (summary, details) | None, "right": ...}
     "anupt_last": None,       # (summary, details, unified_evidence) from the last ANUPT combined reading
+    "force_edit_profile_open": False,  # set True to auto-expand the Edit Profile section on next Profile visit
     "nav": "Home",
 }
 for k, v in defaults.items():
@@ -328,7 +329,10 @@ if st.session_state.nav == "Profile":
     else:
         st.subheader("Profile & Settings")
 
-        with st.expander("Birth details", expanded=False):
+        with st.expander(
+            ":material/edit: Edit Profile — name, birth date/time, city",
+            expanded=st.session_state.pop("force_edit_profile_open", False),
+        ):
             render_birth_details_form(p)
 
         st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
@@ -354,6 +358,16 @@ if st.session_state.nav == "Profile":
                 label = f"{r['created_at'][:16].replace('T', ' ')} UTC · {r['reading_type']} · {r['mode']}"
                 with st.expander(label):
                     st.markdown(r["narrative"])
+
+        st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
+        with st.expander("AI service status (for the app owner)"):
+            st.caption(
+                "Checks whether the AI reading service is reachable. Useful if readings "
+                "show the 'service isn't available' notice. Your API key is never displayed."
+            )
+            if st.button("Run check", key="diag_btn"):
+                with st.spinner("Checking the AI service..."):
+                    st.json(gemini_client.diagnose())
 
         st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
         with st.expander("Delete my account and all data"):
@@ -408,7 +422,16 @@ else:
             st.markdown(f'<div class="anupt-wheel-wrap">{chart_svg.natal_wheel_svg(chart)}</div>',
                         unsafe_allow_html=True)
         with tcol:
-            st.markdown(f"### {p['name']}")
+            name_col, edit_col = st.columns([4, 1.3])
+            with name_col:
+                st.markdown(f"### {p['name']}")
+            with edit_col:
+                st.markdown("<div style='margin-top:0.6rem'></div>", unsafe_allow_html=True)
+                if st.button(":material/edit: Edit", key="home_edit_profile",
+                             help="Edit your name, birth date/time, or city"):
+                    st.session_state.force_edit_profile_open = True
+                    st.session_state.nav = "Profile"
+                    st.rerun()
             st.markdown(
                 f'<p class="anupt-caption">Ascendant <b style="color:var(--indigo)">{chart["ascendant"]["sign"]}</b> '
                 f'&nbsp;·&nbsp; Moon in <b style="color:var(--indigo)">{chart["moon_sign"]}</b> '
