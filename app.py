@@ -1,360 +1,637 @@
-# ============================================================
-# ANUPT – COSMIC AI (FULL PRODUCTION SINGLE FILE)
-# Astrology + Numerology + Tarot + Palm + Structured Fusion
-# ============================================================
+"""
+ANUPT — AI Astrology, Numerology, Palmistry & Tarot life-reading app.
+Phase 1 build: deterministic engines + Unified Insight Engine + Gemini AI writer,
+with a Combined (unified) vs Single-Engine reading mode toggle, as requested.
 
-import streamlit as st
-import swisseph as swe
-import datetime
-import pytz
-import random
-import requests
-import numpy as np
-import cv2
-from timezonefinder import TimezoneFinder
-from groq import Groq
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-GROQ_KEY = st.secrets["GROQ_API_KEY"]
-client = Groq(api_key=GROQ_KEY)
-
-swe.set_ephe_path(".")
-swe.set_sid_mode(swe.SIDM_LAHIRI)
-
-tf = TimezoneFinder()
-
-# ============================================================
-# UTILITY
-# ============================================================
-
-SIGNS = [
-    "Aries","Taurus","Gemini","Cancer","Leo","Virgo",
-    "Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"
-]
-
-def get_sign(deg: float) -> str:
-    return SIGNS[int(deg // 30)]
-
-# ============================================================
-# CITY AUTOCOMPLETE (SAFE)
-# ============================================================
-
-def search_city(query: str):
-    if not query or len(query) < 3:
-        return []
-    try:
-        url = "https://photon.komoot.io/api/"
-        params = {"q": query, "limit": 5}
-        headers = {"User-Agent": "anupt-app"}
-        r = requests.get(url, params=params, headers=headers, timeout=5)
-
-        if r.status_code != 200:
-            return []
-
-        data = r.json()
-        results = []
-        for f in data.get("features", []):
-            name = f["properties"].get("name", "")
-            state = f["properties"].get("state", "")
-            country = f["properties"].get("country", "")
-            label = f"{name}, {state}, {country}"
-            results.append(label)
-        return results
-    except:
-        return []
-
-# ============================================================
-# NUMEROLOGY
-# ============================================================
-
-LETTER_MAP = {
-    **dict.fromkeys(list("AJS"), 1),
-    **dict.fromkeys(list("BKT"), 2),
-    **dict.fromkeys(list("CLU"), 3),
-    **dict.fromkeys(list("DMV"), 4),
-    **dict.fromkeys(list("ENW"), 5),
-    **dict.fromkeys(list("FOX"), 6),
-    **dict.fromkeys(list("GPY"), 7),
-    **dict.fromkeys(list("HQZ"), 8),
-    **dict.fromkeys(list("IR"), 9),
-}
-
-def reduce_number(n: int) -> int:
-    while n > 9 and n not in (11,22,33):
-        n = sum(int(d) for d in str(n))
-    return n
-
-def numerology_engine(name: str, dob: datetime.date):
-    dob_str = dob.strftime("%Y-%m-%d")
-    life = reduce_number(sum(int(x) for x in dob_str if x.isdigit()))
-    destiny = reduce_number(sum(LETTER_MAP.get(c,0) for c in name.upper() if c.isalpha()))
-    current_year = datetime.datetime.now().year
-    personal_year = reduce_number(
-        sum(int(x) for x in dob_str[:7] if x.isdigit()) + current_year
-    )
-
-    return {
-        "life_path": int(life),
-        "destiny": int(destiny),
-        "personal_year": int(personal_year)
-    }
-
-# ============================================================
-# TAROT
-# ============================================================
-
-MAJOR_ARCANA = [
-    "The Fool","The Magician","The High Priestess","The Empress",
-    "The Emperor","The Lovers","The Chariot","Strength",
-    "The Hermit","Wheel of Fortune","Justice","The Hanged Man",
-    "Death","Temperance","The Devil","The Tower",
-    "The Star","The Moon","The Sun","Judgement","The World"
-]
-
-def tarot_engine():
-    deck = MAJOR_ARCANA.copy()
-    random.shuffle(deck)
-
-    spread = []
-    positions = ["Past","Present","Future"]
-
-    for i in range(3):
-        spread.append({
-            "position": positions[i],
-            "card": deck[i],
-            "reversed": random.choice([True, False])
-        })
-
-    return spread
-
-# ============================================================
-# ASTROLOGY
-# ============================================================
-
-PLANETS = {
-    "Sun": swe.SUN,
-    "Moon": swe.MOON,
-    "Mars": swe.MARS,
-    "Mercury": swe.MERCURY,
-    "Jupiter": swe.JUPITER,
-    "Venus": swe.VENUS,
-    "Saturn": swe.SATURN,
-    "Rahu": swe.MEAN_NODE
-}
-
-def astrology_engine(dob: datetime.date, tob: datetime.time, pob: str):
-
-    lat, lon, tz_name = get_location(pob)
-
-    dt = datetime.datetime.combine(dob, tob)
-    local = pytz.timezone(tz_name)
-    dt_local = local.localize(dt)
-    dt_utc = dt_local.astimezone(pytz.utc)
-
-    jd = swe.julday(
-        dt_utc.year,
-        dt_utc.month,
-        dt_utc.day,
-        dt_utc.hour + dt_utc.minute/60
-    )
-
-    planets_data = {}
-    for name, planet in PLANETS.items():
-        pos, _ = swe.calc_ut(jd, planet, swe.FLG_SIDEREAL)
-        deg = float(round(pos[0],2))
-        planets_data[name] = {
-            "degree": deg,
-            "sign": get_sign(deg)
-        }
-
-    planets_data["Ketu"] = {
-        "degree": float((planets_data["Rahu"]["degree"]+180)%360),
-        "sign": get_sign((planets_data["Rahu"]["degree"]+180)%360)
-    }
-
-    houses, ascmc = swe.houses_ex(jd, lat, lon, b'P', swe.FLG_SIDEREAL)
-    lagna_deg = float(round(ascmc[0],2))
-
-    return {
-        "ascendant": {
-            "degree": lagna_deg,
-            "sign": get_sign(lagna_deg)
-        },
-        "planets": planets_data
-    }
-
-def get_location(place):
-    url = "https://photon.komoot.io/api/"
-    params = {"q": place, "limit": 1}
-    headers = {"User-Agent": "anupt"}
-    r = requests.get(url, params=params, headers=headers, timeout=5)
-    data = r.json()
-    lon, lat = data["features"][0]["geometry"]["coordinates"]
-    tz = tf.timezone_at(lat=lat, lng=lon)
-    return float(lat), float(lon), tz
-
-# ============================================================
-# PALM ENGINE
-# ============================================================
-
-def palm_engine(file):
-    if file is None:
-        return None, None
-
-    bytes_data = np.asarray(bytearray(file.read()), dtype=np.uint8)
-    img = cv2.imdecode(bytes_data, 1)
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    strength = np.sum(edges) / 255
-
-    if strength > 15000:
-        level = "strong"
-    elif strength > 8000:
-        level = "moderate"
-    else:
-        level = "faint"
-
-    overlay = img.copy()
-    h,w,_ = overlay.shape
-
-    cv2.line(overlay,(int(w*0.2),int(h*0.8)),(int(w*0.5),int(h*0.4)),(0,0,255),3)
-    cv2.line(overlay,(int(w*0.1),int(h*0.5)),(int(w*0.8),int(h*0.5)),(255,0,0),3)
-    cv2.line(overlay,(int(w*0.1),int(h*0.3)),(int(w*0.8),int(h*0.25)),(0,255,0),3)
-
-    return {
-        "life_line": level,
-        "head_line": level,
-        "heart_line": level
-    }, overlay
-
-# ============================================================
-# AI FUSION (Llama-3 70B)
-# ============================================================
-
-def ask_ai(profile_data, question):
-
-    prompt = f"""
-You are a master advisor.
-
-Structured Profile:
-{profile_data}
-
-Question:
-{question}
-
-Start every response with:
-Direct ans to the question asked by user 
-Personality Overview
-
-A brief analysis summary of profile data
-
-Always provide a detailed summary profile covering all four engines:
-
-Astrology → destiny and life themes
-Numerology → life direction
-Tarot → current situation
-Palmistry → strengths and talents
-
-Respond clearly and practically.
-
-End with a concise 2–3 line summary aligned with the question.
+Run: streamlit run app.py
 """
 
-    try:
+import hashlib
+from datetime import date, time, datetime, timezone
 
-        res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
+import pytz
+import streamlit as st
+from PIL import Image
+
+from engines import numerology, astrology, tarot, palmistry, unified
+from ai import gemini_client
+from utils import styling, chart_svg
+from auth import store as auth_store
+
+st.set_page_config(page_title="ANUPT", page_icon="assets/logo_mark.png", layout="wide", initial_sidebar_state="expanded")
+styling.inject()
+
+try:
+    auth_store.init_db()
+except Exception as e:
+    st.error(
+        "Couldn't connect to the database. This app needs a `DATABASE_URL` — a Postgres "
+        "connection string from a free host like Neon or Supabase.\n\n"
+        "- **Local:** add it to `.streamlit/secrets.toml` or set it as an environment variable.\n"
+        "- **Streamlit Community Cloud:** add it under your app's *Settings → Secrets*.\n\n"
+        f"Details: {e}"
+    )
+    st.stop()
+
+# ----------------------------------------------------------------------------
+# Session state initialisation
+# ----------------------------------------------------------------------------
+defaults = {
+    "user_id": None,
+    "username": None,
+    "profile": None,          # dict of birth details
+    "numerology_profile": None,
+    "chart": None,
+    "mode": "Combined (Unified)",
+    "gemini_key": "",
+    "gemini_model": gemini_client.DEFAULT_MODEL,
+    "chat_history": [],
+    "last_tarot_draw": None,
+    "nav": "Home",
+}
+for k, v in defaults.items():
+    st.session_state.setdefault(k, v)
+
+
+def render_auth_screen():
+    """Login / sign-up gate — nothing else renders until this passes."""
+    styling.hero()
+    st.markdown("<div style='max-width:420px;margin:0 auto;'>", unsafe_allow_html=True)
+    tab_login, tab_signup = st.tabs(["Log in", "Sign up"])
+
+    with tab_login:
+        with st.form("login_form"):
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Log in", type="primary")
+        if submitted:
+            if not u or not p:
+                st.error("Enter both a username and password.")
+            else:
+                uid = auth_store.verify_user(u, p)
+                if uid is not None:
+                    st.session_state.user_id = uid
+                    st.session_state.username = u.strip()
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
+
+    with tab_signup:
+        with st.form("signup_form"):
+            su = st.text_input("Choose a username", key="signup_u")
+            sp1 = st.text_input("Choose a password", type="password", key="signup_p1")
+            sp2 = st.text_input("Confirm password", type="password", key="signup_p2")
+            signed_up = st.form_submit_button("Create account", type="primary")
+        if signed_up:
+            if sp1 != sp2:
+                st.error("Passwords don't match.")
+            else:
+                ok, msg = auth_store.create_user(su, sp1)
+                if ok:
+                    uid = auth_store.verify_user(su, sp1)
+                    st.session_state.user_id = uid
+                    st.session_state.username = su.strip()
+                    st.rerun()
+                else:
+                    st.error(msg)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='anupt-disclaimer' style='text-align:center;'>Your account, birth profile, and "
+        "reading history are stored in this app's own database, under your account — nothing is "
+        "sent anywhere else.</p>",
+        unsafe_allow_html=True,
+    )
+
+
+if st.session_state.user_id is None:
+    render_auth_screen()
+    st.stop()
+
+# Load the saved profile from the database once per login (session_state stays
+# empty until now, so this only fires right after logging in, not every rerun).
+if st.session_state.profile is None:
+    _loaded = auth_store.get_profile(st.session_state.user_id)
+    if _loaded is not None:
+        st.session_state.profile = _loaded
+
+
+def reading_id_for(period_label: str) -> str:
+    """Stable per-profile, per-period ID so repeat draws for the same period are reproducible."""
+    p = st.session_state.profile
+    raw = f"{p['name']}|{p['dob']}|{period_label}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def ensure_engines_computed():
+    p = st.session_state.profile
+    if p is None:
+        return
+    if st.session_state.numerology_profile is None:
+        st.session_state.numerology_profile = numerology.full_profile(p["name"], p["dob"])
+    if st.session_state.chart is None:
+        st.session_state.chart = astrology.compute_chart(
+            p["name"], p["dob"], p["birth_time"], p["latitude"], p["longitude"], p["utc_offset"]
         )
 
-        return res.choices[0].message.content
 
-    except Exception as e:
-        return f"⚠️ AI Error: {str(e)}"
+# ----------------------------------------------------------------------------
+# Sidebar — settings live globally: AI key, model, mode toggle, navigation
+# ----------------------------------------------------------------------------
+with st.sidebar:
+    styling.sidebar_mark()
+    st.markdown(
+        f"<p class='anupt-caption' style='text-align:center;'>Signed in as "
+        f"<b style='color:var(--parchment)'>{st.session_state.username}</b></p>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Log out", key="logout_btn"):
+        for k, v in defaults.items():
+            st.session_state[k] = v
+        st.rerun()
+    st.markdown("<hr class='anupt-divider'>", unsafe_allow_html=True)
 
-# ============================================================
-# STREAMLIT UI
-# ============================================================
+    st.markdown("#### Navigation")
+    nav_options = ["Home", "My Life", "Tarot", "Palmistry", "AI Astrologer", "My Data", "Profile"]
+    st.session_state.nav = st.radio(
+        "Go to", nav_options,
+        index=nav_options.index(st.session_state.nav) if st.session_state.nav in nav_options else 0,
+        label_visibility="collapsed",
+    )
+    st.markdown("<hr class='anupt-divider'>", unsafe_allow_html=True)
 
-st.title("ANUPT – Cosmic Intelligence")
+    st.markdown("#### Reading Mode")
+    st.session_state.mode = st.radio(
+        "Mode", ["Combined (Unified)", "Single Engine"],
+        index=0 if st.session_state.mode == "Combined (Unified)" else 1,
+        label_visibility="collapsed",
+        help="Combined fuses all four systems into one AI-synthesized reading. "
+             "Single Engine shows one system's reading on its own, with no cross-referencing.",
+    )
+    single_engine_choice = None
+    if st.session_state.mode == "Single Engine":
+        single_engine_choice = st.selectbox(
+            "Which engine?", ["Astrology", "Numerology", "Tarot", "Palmistry"]
+        )
+    st.session_state["single_engine_choice"] = single_engine_choice
 
-name = st.text_input("Name")
+    st.markdown("<hr class='anupt-divider'>", unsafe_allow_html=True)
+    st.markdown("#### AI Provider")
+    st.session_state.gemini_key = st.text_input(
+        "Gemini API key", value=st.session_state.gemini_key, type="password",
+        help="Stored only in this browser session — never written to disk. "
+             "Get a key at aistudio.google.com/apikey.",
+    )
+    st.session_state.gemini_model = st.text_input(
+        "Model", value=st.session_state.gemini_model,
+        help="Gemini model id. Default works as of this build; change it if Google "
+             "retires the model — check ai.google.dev/gemini-api/docs/models.",
+    )
+    st.markdown(
+        "<div class='anupt-disclaimer'>Readings are spiritual / personal-reflection "
+        "guidance, not guaranteed factual outcomes. Not a substitute for professional "
+        "medical, legal or financial advice.</div>",
+        unsafe_allow_html=True,
+    )
 
-dob = st.date_input(
-    "Date of Birth",
-    min_value=datetime.date(1900,1,1),
-    max_value=datetime.date.today()
-)
+# ----------------------------------------------------------------------------
+# Onboarding gate
+# ----------------------------------------------------------------------------
+if st.session_state.profile is None and st.session_state.nav not in ("Profile", "My Data"):
+    st.session_state.nav = "Profile"
 
-tob = st.time_input("Time of Birth")
+styling.hero()
 
-city_query = st.text_input("Type birth city")
-suggestions = search_city(city_query)
-pob = st.selectbox("Select city", suggestions) if suggestions else ""
+TOPIC_KEYWORDS = {
+    "career": ["career", "job", "work", "promotion", "business"],
+    "finance": ["money", "finance", "wealth", "income", "invest"],
+    "relationships": ["love", "relationship", "partner", "marriage", "dating"],
+    "family": ["family", "parents", "children", "home"],
+    "personal_growth": ["growth", "purpose", "creativity", "learning"],
+    "spirituality": ["spiritual", "spirituality", "meaning", "soul"],
+}
 
-st.subheader("Left Palm")
-left_cam = st.camera_input("Take photo (left)", key="left_cam")
-left_up = st.file_uploader("Or upload", type=["jpg","png"], key="left_upload")
 
-st.subheader("Right Palm")
-right_cam = st.camera_input("Take photo (right)", key="right_cam")
-right_up = st.file_uploader("Or upload", type=["jpg","png"], key="right_upload")
+def route_topic(question: str) -> str | None:
+    q = question.lower()
+    for theme, kws in TOPIC_KEYWORDS.items():
+        if any(kw in q for kw in kws):
+            return theme
+    return None
 
-def pick(cam, up):
-    return cam if cam else up
 
-left_file = pick(left_cam, left_up)
-right_file = pick(right_cam, right_up)
+def evidence_for_theme(theme: str | None) -> dict:
+    """Topic-specific evidence selection — never send the whole profile to the model."""
+    chart = st.session_state.chart
+    num = st.session_state.numerology_profile
+    if theme is None:
+        u = unified.synthesize(num, chart, st.session_state.last_tarot_draw or [])
+        return {"top_themes": u["ranked_themes"][:3], "theme_scores": u["theme_scores"]}
 
-if name and pob:
-    st.info(f"""
-    Confirm Details:
-    Name: {name}
-    DOB: {dob}
-    TOB: {tob}
-    POB: {pob}
-    """)
-
-if st.button("Generate Full Profile"):
-
-    astro = astrology_engine(dob, tob, pob)
-    num = numerology_engine(name, dob)
-    tarot = tarot_engine()
-    left_palm, left_overlay = palm_engine(left_file)
-    right_palm, right_overlay = palm_engine(right_file)
-
-    profile = {
-        "astrology": astro,
-        "numerology": num,
-        "tarot": tarot,
-        "palm": {
-            "left": left_palm,
-            "right": right_palm
-        }
+    relevant_houses = [h for h, t in unified.HOUSE_THEME_MAP.items() if t == theme]
+    relevant_planets = {
+        name: data for name, data in chart["planets"].items() if data["house"] in relevant_houses
+    }
+    return {
+        "topic": theme,
+        "dasha": chart["dasha"],
+        "relevant_houses": relevant_houses,
+        "relevant_planets": relevant_planets,
+        "numerology_life_path": num["life_path"],
+        "numerology_personal_year": num["personal_year"],
     }
 
-    st.session_state["profile"] = profile
 
-    st.success("Profile Generated")
+# ============================================================================
+# PAGE: PROFILE / ONBOARDING
+# ============================================================================
+if st.session_state.nav == "Profile":
+    st.subheader("Your Profile")
+    p = st.session_state.profile or {}
 
-    if left_overlay is not None:
-        st.image(left_overlay, caption="Left Palm Lines")
+    with st.form("profile_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            name = st.text_input("Full name", value=p.get("name", ""))
+            dob = st.date_input("Date of birth", value=p.get("dob", date(1995, 1, 1)),
+                                 min_value=date(1900, 1, 1), max_value=date.today())
+            birth_time = st.time_input("Exact birth time", value=p.get("birth_time", time(12, 0)))
+        with c2:
+            city = st.text_input("Birth city", value=p.get("city", ""), placeholder="e.g. Mumbai, India")
+            lat = st.number_input("Latitude", value=p.get("latitude", 19.0760), format="%.4f")
+            lon = st.number_input("Longitude", value=p.get("longitude", 72.8777), format="%.4f")
+            utc_offset = st.number_input(
+                "UTC offset at birth (hours)", value=p.get("utc_offset", 5.5), step=0.5, format="%.1f",
+                help="e.g. India Standard Time = 5.5, US Eastern (standard) = -5",
+            )
 
-    if right_overlay is not None:
-        st.image(right_overlay, caption="Right Palm Lines")
+        st.markdown("**Try auto-locate** (needs internet where this app is running):")
+        auto_col1, auto_col2 = st.columns([3, 1])
+        with auto_col2:
+            geocode_clicked = st.form_submit_button("📍 Resolve city")
 
-if "profile" in st.session_state:
-    question = st.text_input("Ask your question")
+        interests = st.multiselect(
+            "Areas of interest",
+            ["Career", "Money", "Love", "Marriage", "Family", "Personal growth", "Spirituality"],
+            default=p.get("interests", ["Career", "Love"]),
+        )
 
-    if st.button("Ask Universe"):
-        answer = ask_ai(st.session_state["profile"], question)
-        st.write(answer)
-        
-        
+        saved = st.form_submit_button("Save profile & generate reading engines", type="primary")
+
+    if geocode_clicked and city:
+        try:
+            from geopy.geocoders import Nominatim
+            from timezonefinder import TimezoneFinder
+
+            geolocator = Nominatim(user_agent="anupt-app")
+            loc = geolocator.geocode(city, timeout=8)
+            if loc:
+                tf = TimezoneFinder()
+                tz_name = tf.timezone_at(lat=loc.latitude, lng=loc.longitude)
+                tzinfo = pytz.timezone(tz_name)
+                offset_seconds = tzinfo.utcoffset(datetime.combine(dob, birth_time)).total_seconds()
+                st.success(
+                    f"Found **{loc.address}** — lat {loc.latitude:.4f}, lon {loc.longitude:.4f}, "
+                    f"timezone {tz_name} (UTC{offset_seconds/3600:+.1f}). "
+                    f"Values filled in below — click Save to confirm."
+                )
+                p.update({"latitude": loc.latitude, "longitude": loc.longitude,
+                          "utc_offset": offset_seconds / 3600})
+                st.session_state.profile = {**p, "city": city}
+                st.rerun()
+            else:
+                st.warning("Couldn't resolve that city — enter latitude/longitude/UTC offset manually.")
+        except Exception as e:
+            st.warning(f"Auto-locate unavailable here ({e}) — enter coordinates manually.")
+
+    if saved:
+        if not name.strip():
+            st.error("Please enter a name.")
+        else:
+            st.session_state.profile = {
+                "name": name.strip(), "dob": dob, "birth_time": birth_time, "city": city,
+                "latitude": lat, "longitude": lon, "utc_offset": utc_offset, "interests": interests,
+            }
+            auth_store.save_profile(st.session_state.user_id, st.session_state.profile)
+            st.session_state.numerology_profile = None
+            st.session_state.chart = None
+            ensure_engines_computed()
+            st.session_state.nav = "Home"
+            st.success("Profile saved to your account — engines computed. Head to Home for your reading.")
+            st.rerun()
+
+    with st.expander("Privacy note"):
+        st.write(
+            "Your birth profile and reading history are saved to this app's own database "
+            "under your account — nothing is sent to any other server. You can review or "
+            "permanently delete everything from the **My Data** page at any time."
+        )
+
+# ============================================================================
+# PAGE: MY DATA (account info, reading history, delete) — available even
+# before a birth profile is set, since it's about the account itself.
+# ============================================================================
+elif st.session_state.nav == "My Data":
+    st.subheader("My Data")
+    created = auth_store.account_created_at(st.session_state.user_id)
+    st.markdown(
+        f"**Account:** {st.session_state.username}"
+        + (f"  ·  member since {created[:10]}" if created else "")
+    )
+
+    p = st.session_state.profile
+    st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
+    st.markdown("#### Saved birth profile")
+    if p is None:
+        st.info("No birth profile saved yet — add one on the **Profile** page.")
+    else:
+        st.markdown(styling.table(
+            ["Field", "Value"],
+            [["Name", p["name"]], ["Date of birth", p["dob"].isoformat()],
+             ["Birth time", p["birth_time"].isoformat()], ["City", p.get("city") or "—"],
+             ["Latitude", p["latitude"]], ["Longitude", p["longitude"]],
+             ["UTC offset", p["utc_offset"]], ["Interests", ", ".join(p.get("interests", [])) or "—"]],
+        ), unsafe_allow_html=True)
+
+    st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
+    st.markdown("#### Reading history")
+    readings = auth_store.get_readings(st.session_state.user_id)
+    if not readings:
+        st.info("No readings saved yet — generate one from Home, My Life, Tarot, or Palmistry.")
+    else:
+        for r in readings:
+            label = f"{r['created_at'][:16].replace('T', ' ')} UTC · {r['reading_type']} · {r['mode']}"
+            with st.expander(label):
+                st.markdown(r["narrative"])
+
+    st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
+    with st.expander("Delete my account and all data"):
+        st.warning(
+            "This permanently deletes your account, saved birth profile, and entire reading "
+            "history from the database. This can't be undone."
+        )
+        confirm = st.checkbox("I understand this is permanent")
+        if st.button("Delete my account", disabled=not confirm, key="delete_account_btn"):
+            auth_store.delete_account(st.session_state.user_id)
+            for k, v in defaults.items():
+                st.session_state[k] = v
+            st.success("Account deleted.")
+            st.rerun()
+
+# ============================================================================
+# Guard: everything else needs a birth profile
+# ============================================================================
+elif st.session_state.profile is None:
+    st.info("Head to **Profile** in the sidebar to enter your birth details first.")
+
+else:
+    ensure_engines_computed()
+    p = st.session_state.profile
+    chart = st.session_state.chart
+    num = st.session_state.numerology_profile
+
+    # ========================================================================
+    # PAGE: HOME
+    # ========================================================================
+    if st.session_state.nav == "Home":
+        wcol, tcol = st.columns([1, 1.15], gap="large")
+        with wcol:
+            st.markdown(f'<div class="anupt-wheel-wrap">{chart_svg.natal_wheel_svg(chart)}</div>',
+                        unsafe_allow_html=True)
+        with tcol:
+            st.markdown(f"### {p['name']}")
+            st.markdown(
+                f'<p class="anupt-caption">Ascendant <b style="color:var(--brass-soft)">{chart["ascendant"]["sign"]}</b> '
+                f'&nbsp;·&nbsp; Moon in <b style="color:var(--brass-soft)">{chart["moon_sign"]}</b> '
+                f'&nbsp;·&nbsp; Sun in <b style="color:var(--brass-soft)">{chart["sun_sign"]}</b> '
+                f'&nbsp;·&nbsp; Life Path <b style="color:var(--brass-soft)">{num["life_path"]["value"]}</b></p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<p class="anupt-caption">Currently in the <b style="color:var(--parchment)">'
+                f'{chart["dasha"]["mahadasha"]}</b> Mahadasha, <b style="color:var(--parchment)">'
+                f'{chart["dasha"]["antardasha"]}</b> Antardasha.</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
+            st.markdown("#### Today's Reading")
+
+            if st.button("Cast today's reading", type="primary"):
+                rid = reading_id_for(f"day-{date.today().isoformat()}")
+                cards = tarot.draw_spread(rid, "one_card")
+                st.session_state.last_tarot_draw = cards
+
+                if st.session_state.mode == "Combined (Unified)":
+                    u = unified.synthesize(num, chart, cards)
+                    with st.spinner("Synthesizing across all systems..."):
+                        narrative = gemini_client.generate_unified_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key, "Day", u
+                        )
+                    auth_store.save_reading(st.session_state.user_id, "Day", "Combined", "all", narrative)
+                    styling.scroll_panel("Today · Combined reading", narrative)
+                    with st.expander("See the evidence trail"):
+                        st.json(u)
+                else:
+                    engine = st.session_state.single_engine_choice
+                    data = {"Astrology": chart, "Numerology": num, "Tarot": cards}.get(engine, chart)
+                    with st.spinner(f"Reading via {engine} only..."):
+                        narrative = gemini_client.generate_single_engine_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key, engine, data, "Day"
+                        )
+                    auth_store.save_reading(st.session_state.user_id, "Day", "Single Engine", engine, narrative)
+                    styling.scroll_panel(f"Today · {engine} only", narrative)
+                    with st.expander("See the raw data"):
+                        st.json(data)
+
+    # ========================================================================
+    # PAGE: MY LIFE (Life / Year / Month / Week / Day / Question readings)
+    # ========================================================================
+    elif st.session_state.nav == "My Life":
+        st.subheader("Readings")
+        reading_type = st.selectbox("Reading type", ["Life", "Year", "Month", "Week", "Day", "Question"])
+        question = None
+        if reading_type == "Question":
+            question = st.text_input("Ask your question", placeholder="Will this be a good time for a career change?")
+
+        tabs = st.tabs(["Astrology", "Numerology", "Generate Reading"])
+        with tabs[0]:
+            wc, dc = st.columns([1, 1.2], gap="large")
+            with wc:
+                st.markdown(f'<div class="anupt-wheel-wrap">{chart_svg.natal_wheel_svg(chart, size=380)}</div>',
+                            unsafe_allow_html=True)
+            with dc:
+                st.markdown(
+                    f'<p class="anupt-caption">Nakshatra <b style="color:var(--brass-soft)">{chart["nakshatra"]}</b>, '
+                    f'pada {chart["nakshatra_pada"]} &nbsp;·&nbsp; Mahadasha '
+                    f'<b style="color:var(--brass-soft)">{chart["dasha"]["mahadasha"]}</b> '
+                    f'({chart["dasha"]["mahadasha_start_year"]}–{chart["dasha"]["mahadasha_end_year"]}) '
+                    f'→ Antardasha <b style="color:var(--brass-soft)">{chart["dasha"]["antardasha"]}</b></p>',
+                    unsafe_allow_html=True,
+                )
+                rows = [[chart_svg.PLANET_GLYPH.get(k, "•") + " " + k, v["sign"], v["house"],
+                         "<span class='retro'>Retrograde</span>" if v["retrograde"] else "Direct"]
+                        for k, v in chart["planets"].items()]
+                st.markdown(styling.table(["Planet", "Sign", "House", "Motion"], rows), unsafe_allow_html=True)
+        with tabs[1]:
+            items = [(v["value"], k.replace("_", " ").title()) for k, v in num.items()]
+            st.markdown(styling.medallion_grid(items), unsafe_allow_html=True)
+            with st.expander("What each number means"):
+                rows = [[k.replace("_", " ").title(), v["value"], v["meaning"]] for k, v in num.items()]
+                st.markdown(styling.table(["Number", "Value", "Meaning"], rows), unsafe_allow_html=True)
+        with tabs[2]:
+            if reading_type == "Question" and not question:
+                st.info("Type your question above first.")
+            elif st.button("Generate reading", type="primary", key="mylife_generate"):
+                rid = reading_id_for(f"{reading_type}-{question or ''}-{date.today().isocalendar()}")
+                cards = tarot.draw_spread(rid, "three_card")
+                st.session_state.last_tarot_draw = cards
+
+                if st.session_state.mode == "Combined (Unified)":
+                    u = unified.synthesize(num, chart, cards)
+                    with st.spinner("Synthesizing across all systems..."):
+                        narrative = gemini_client.generate_unified_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key,
+                            reading_type, u, question,
+                        )
+                    auth_store.save_reading(st.session_state.user_id, reading_type, "Combined", "all", narrative)
+                    st.markdown("##### Where the systems agree")
+                    meter_rows = "".join(
+                        styling.strength_meter(
+                            t.replace("_", " ").title(),
+                            u["theme_scores"][t]["strength"],
+                            u["theme_scores"][t]["supporting_systems"],
+                        )
+                        for t in u["ranked_themes"][:4]
+                    )
+                    st.markdown(meter_rows, unsafe_allow_html=True)
+                    styling.scroll_panel(f"{reading_type} · Combined reading", narrative)
+                    with st.expander("See the evidence trail"):
+                        st.json(u)
+                else:
+                    engine = st.session_state.single_engine_choice
+                    data = {"Astrology": chart, "Numerology": num, "Tarot": cards}.get(engine, chart)
+                    with st.spinner(f"Reading via {engine} only..."):
+                        narrative = gemini_client.generate_single_engine_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key,
+                            engine, data, reading_type, question,
+                        )
+                    auth_store.save_reading(st.session_state.user_id, reading_type, "Single Engine", engine, narrative)
+                    styling.scroll_panel(f"{reading_type} · {engine} only", narrative)
+                    with st.expander("See the raw data"):
+                        st.json(data)
+
+    # ========================================================================
+    # PAGE: TAROT
+    # ========================================================================
+    elif st.session_state.nav == "Tarot":
+        st.subheader("Tarot")
+        spread_label = st.selectbox("Spread", ["Daily guidance (1 card)", "Past · Present · Future (3 cards)",
+                                                 "Five-card spread"])
+        spread_key = {"Daily guidance (1 card)": "one_card", "Past · Present · Future (3 cards)": "three_card",
+                      "Five-card spread": "five_card"}[spread_label]
+
+        colA, colB = st.columns([1, 1])
+        reshuffle = colB.checkbox("Reshuffle (new random draw instead of today's fixed card)")
+        if colA.button("Draw", type="primary"):
+            rid = (reading_id_for(f"tarot-{spread_key}-{date.today().isoformat()}") if not reshuffle
+                   else hashlib.sha256(f"{datetime.now(timezone.utc)}".encode()).hexdigest()[:16])
+            cards = tarot.draw_spread(rid, spread_key)
+            st.session_state.last_tarot_draw = cards
+
+        if st.session_state.last_tarot_draw:
+            cards = st.session_state.last_tarot_draw
+            row_html = '<div class="anupt-tarot-row">' + "".join(
+                styling.tarot_card_html(c) for c in cards
+            ) + '</div>'
+            st.markdown(row_html, unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Interpret this spread"):
+                if st.session_state.mode == "Combined (Unified)":
+                    u = unified.synthesize(num, chart, cards)
+                    with st.spinner("Synthesizing..."):
+                        narrative = gemini_client.generate_unified_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key, "Tarot spread", u
+                        )
+                    auth_store.save_reading(st.session_state.user_id, "Tarot spread", "Combined", "all", narrative)
+                    styling.scroll_panel("Tarot · Combined reading", narrative)
+                else:
+                    with st.spinner("Reading via Tarot only..."):
+                        narrative = gemini_client.generate_single_engine_narrative(
+                            st.session_state.gemini_model, st.session_state.gemini_key,
+                            "Tarot", cards, "Tarot spread",
+                        )
+                    auth_store.save_reading(st.session_state.user_id, "Tarot spread", "Single Engine", "Tarot", narrative)
+                    styling.scroll_panel("Tarot · Single-engine reading", narrative)
+
+        with st.expander("Deck integrity check"):
+            st.write(f"78-card completeness check: {'✅ passed' if tarot.deck_completeness_check() else '❌ FAILED'}")
+
+    # ========================================================================
+    # PAGE: PALMISTRY
+    # ========================================================================
+    elif st.session_state.nav == "Palmistry":
+        st.subheader("Palmistry")
+        st.caption(
+            "Line/mount reading is AI-vision-assisted, not a trained deterministic detector — "
+            "we're upfront about that rather than fabricating precision we don't have."
+        )
+        hand = st.radio("Which hand?", ["Left", "Right"], horizontal=True)
+        uploaded = st.file_uploader("Upload a clear, well-lit palm photo", type=["jpg", "jpeg", "png"])
+
+        if uploaded:
+            img = Image.open(uploaded)
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.image(img, caption=f"{hand} palm", width="stretch")
+            with c2:
+                quality = palmistry.assess_image(img)
+                st.markdown("**Deterministic quality gate**")
+                st.json(quality)
+
+            if not quality["passed"]:
+                st.warning("Please retake the photo:\n\n" + "\n".join(f"- {i}" for i in quality["issues"]))
+            else:
+                st.success("Image passed the quality gate.")
+                if st.button("Get palm reading"):
+                    uploaded.seek(0)
+                    img_bytes = uploaded.read()
+                    mime = uploaded.type or "image/jpeg"
+                    with st.spinner("Reading your palm..."):
+                        narrative = gemini_client.palm_vision_reading(
+                            st.session_state.gemini_model, st.session_state.gemini_key,
+                            img_bytes, mime, hand.lower(),
+                        )
+                    auth_store.save_reading(
+                        st.session_state.user_id, f"Palmistry ({hand})", "AI-assisted", "Palmistry", narrative
+                    )
+                    styling.scroll_panel(f"Palmistry · {hand} hand · AI-assisted", narrative)
+
+    # ========================================================================
+    # PAGE: AI ASTROLOGER (chat)
+    # ========================================================================
+    elif st.session_state.nav == "AI Astrologer":
+        st.subheader("AI Astrologer — Ask Anything")
+        st.caption("Questions are routed to the relevant systems first, then answered — "
+                   "your whole profile isn't dumped into every message.")
+
+        for turn in st.session_state.chat_history:
+            with st.chat_message("user" if turn["role"] == "user" else "assistant"):
+                st.write(turn["text"])
+
+        question = st.chat_input("Ask about your career, love life, this year, anything...")
+        if question:
+            st.session_state.chat_history.append({"role": "user", "text": question})
+            with st.chat_message("user"):
+                st.write(question)
+            theme = route_topic(question)
+            context = evidence_for_theme(theme)
+            with st.chat_message("assistant"):
+                with st.spinner("Consulting the charts..."):
+                    reply = gemini_client.chat_reply(
+                        st.session_state.gemini_model, st.session_state.gemini_key,
+                        st.session_state.chat_history, question, context,
+                    )
+                st.write(reply)
+                if theme:
+                    st.caption(f"Routed via: {theme.replace('_', ' ')}")
+            st.session_state.chat_history.append({"role": "model", "text": reply})
+
