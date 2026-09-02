@@ -47,6 +47,7 @@ defaults = {
     "gemini_model": gemini_client.DEFAULT_MODEL,
     "chat_history": [],
     "last_tarot_draw": None,
+    "geocode_prefill": None,
     "nav": "Home",
 }
 for k, v in defaults.items():
@@ -115,6 +116,16 @@ if st.session_state.profile is None:
         st.session_state.profile = _loaded
 
 
+REQUIRED_PROFILE_FIELDS = ("name", "dob", "birth_time", "latitude", "longitude", "utc_offset")
+
+
+def profile_is_complete(p: dict | None) -> bool:
+    """True only if every field the engines need is present. A profile can end up partial
+    (e.g. an interrupted flow) — treat that the same as no profile, rather than crashing
+    deep in a page that assumes it's complete."""
+    return p is not None and all(k in p for k in REQUIRED_PROFILE_FIELDS)
+
+
 def reading_id_for(period_label: str) -> str:
     """Stable per-profile, per-period ID so repeat draws for the same period are reproducible."""
     p = st.session_state.profile
@@ -124,7 +135,7 @@ def reading_id_for(period_label: str) -> str:
 
 def ensure_engines_computed():
     p = st.session_state.profile
-    if p is None:
+    if not profile_is_complete(p):
         return
     if st.session_state.numerology_profile is None:
         st.session_state.numerology_profile = numerology.full_profile(p["name"], p["dob"])
@@ -196,7 +207,7 @@ with st.sidebar:
 # ----------------------------------------------------------------------------
 # Onboarding gate
 # ----------------------------------------------------------------------------
-if st.session_state.profile is None and st.session_state.nav not in ("Profile", "My Data"):
+if not profile_is_complete(st.session_state.profile) and st.session_state.nav not in ("Profile", "My Data"):
     st.session_state.nav = "Profile"
 
 styling.hero()
@@ -247,6 +258,7 @@ def evidence_for_theme(theme: str | None) -> dict:
 if st.session_state.nav == "Profile":
     st.subheader("Your Profile")
     p = st.session_state.profile or {}
+    geo = st.session_state.get("geocode_prefill")  # holds a pending auto-locate result, if any
 
     with st.form("profile_form"):
         c1, c2 = st.columns(2)
@@ -256,11 +268,12 @@ if st.session_state.nav == "Profile":
                                  min_value=date(1900, 1, 1), max_value=date.today())
             birth_time = st.time_input("Exact birth time", value=p.get("birth_time", time(12, 0)))
         with c2:
-            city = st.text_input("Birth city", value=p.get("city", ""), placeholder="e.g. Mumbai, India")
-            lat = st.number_input("Latitude", value=p.get("latitude", 19.0760), format="%.4f")
-            lon = st.number_input("Longitude", value=p.get("longitude", 72.8777), format="%.4f")
+            city = st.text_input("Birth city", value=(geo or p).get("city", p.get("city", "")),
+                                  placeholder="e.g. Mumbai, India")
+            lat = st.number_input("Latitude", value=(geo or p).get("latitude", 19.0760), format="%.4f")
+            lon = st.number_input("Longitude", value=(geo or p).get("longitude", 72.8777), format="%.4f")
             utc_offset = st.number_input(
-                "UTC offset at birth (hours)", value=p.get("utc_offset", 5.5), step=0.5, format="%.1f",
+                "UTC offset at birth (hours)", value=(geo or p).get("utc_offset", 5.5), step=0.5, format="%.1f",
                 help="e.g. India Standard Time = 5.5, US Eastern (standard) = -5",
             )
 
@@ -294,9 +307,14 @@ if st.session_state.nav == "Profile":
                     f"timezone {tz_name} (UTC{offset_seconds/3600:+.1f}). "
                     f"Values filled in below — click Save to confirm."
                 )
-                p.update({"latitude": loc.latitude, "longitude": loc.longitude,
-                          "utc_offset": offset_seconds / 3600})
-                st.session_state.profile = {**p, "city": city}
+                # Stored separately from st.session_state.profile — a geocode result is not
+                # a saved profile, and writing it there directly (as this used to) produced a
+                # partial dict missing name/dob/birth_time for first-time users, which crashed
+                # every other page with a KeyError the moment they navigated away.
+                st.session_state.geocode_prefill = {
+                    "city": city, "latitude": loc.latitude, "longitude": loc.longitude,
+                    "utc_offset": offset_seconds / 3600,
+                }
                 st.rerun()
             else:
                 st.warning("Couldn't resolve that city — enter latitude/longitude/UTC offset manually.")
@@ -311,6 +329,7 @@ if st.session_state.nav == "Profile":
                 "name": name.strip(), "dob": dob, "birth_time": birth_time, "city": city,
                 "latitude": lat, "longitude": lon, "utc_offset": utc_offset, "interests": interests,
             }
+            st.session_state.geocode_prefill = None
             auth_store.save_profile(st.session_state.user_id, st.session_state.profile)
             st.session_state.numerology_profile = None
             st.session_state.chart = None
@@ -341,7 +360,7 @@ elif st.session_state.nav == "My Data":
     p = st.session_state.profile
     st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
     st.markdown("#### Saved birth profile")
-    if p is None:
+    if not profile_is_complete(p):
         st.info("No birth profile saved yet — add one on the **Profile** page.")
     else:
         st.markdown(styling.table(
@@ -380,7 +399,7 @@ elif st.session_state.nav == "My Data":
 # ============================================================================
 # Guard: everything else needs a birth profile
 # ============================================================================
-elif st.session_state.profile is None:
+elif not profile_is_complete(st.session_state.profile):
     st.info("Head to **Profile** in the sidebar to enter your birth details first.")
 
 else:
