@@ -26,7 +26,8 @@ SIGN_GLYPH = {s: g + _VS for s, g in zip(SIGNS, "♈♉♊♋♌♍♎♏♐♑�
 PLANET_GLYPH = {
     "Sun": "☉" + _VS, "Moon": "☽" + _VS, "Mars": "♂" + _VS, "Mercury": "☿" + _VS,
     "Jupiter": "♃" + _VS, "Venus": "♀" + _VS, "Saturn": "♄" + _VS,
-    "Rahu": "☊" + _VS, "Ketu": "☋" + _VS,
+    "Uranus": "♅" + _VS, "Neptune": "♆" + _VS, "Pluto": "♇" + _VS,
+    "Rahu": "☊" + _VS, "Ketu": "☋" + _VS, "Chiron": "⚷" + _VS,
 }
 
 

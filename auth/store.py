@@ -23,7 +23,7 @@ import json
 import os
 import secrets
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import psycopg2
 import psycopg2.errors
@@ -79,9 +79,24 @@ def init_db():
                 user_id INTEGER PRIMARY KEY REFERENCES users(id),
                 name TEXT, dob DATE, birth_time TIME, city TEXT,
                 latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, utc_offset DOUBLE PRECISION,
-                interests TEXT, updated_at TIMESTAMPTZ
+                interests TEXT, updated_at TIMESTAMPTZ,
+                numerology_system TEXT DEFAULT 'pythagorean',
+                current_name TEXT,
+                language TEXT DEFAULT 'en',
+                house_system TEXT DEFAULT 'Placidus'
             )
         """)
+        # Migration safety: an existing deployment's `profiles` table predates
+        # these three columns. CREATE TABLE above only applies to a brand-new
+        # database, so anyone upgrading needs these added explicitly — IF NOT
+        # EXISTS makes this a no-op on a database that already has them.
+        for col_def in (
+            "numerology_system TEXT DEFAULT 'pythagorean'",
+            "current_name TEXT",
+            "language TEXT DEFAULT 'en'",
+            "house_system TEXT DEFAULT 'Placidus'",
+        ):
+            cur.execute(f"ALTER TABLE profiles ADD COLUMN IF NOT EXISTS {col_def}")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS readings (
                 id SERIAL PRIMARY KEY,
@@ -101,6 +116,46 @@ def init_db():
                 PRIMARY KEY (user_id, hand)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS insights_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL
+            )
+        """)
+
+
+def get_cached(cache_key: str, max_age_hours: float = 24.0):
+    """Generic reusable-results cache — currently used by the YouTube
+    Insights pipeline (engines/youtube_insights.py) to avoid re-running
+    Research+Extraction (an API call plus an AI call) for the same sign
+    within the same day, but written generically enough for any other
+    pipeline that wants the same 'minimize API calls via reuse' pattern.
+    Returns None on a miss OR an expired entry — the caller can't tell
+    the difference, and doesn't need to; either way it should recompute."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT data, created_at FROM insights_cache WHERE cache_key = %s", (cache_key,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    age = datetime.now(timezone.utc) - row["created_at"]
+    if age > timedelta(hours=max_age_hours):
+        return None
+    try:
+        return json.loads(row["data"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def set_cached(cache_key: str, data) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO insights_cache (cache_key, data, created_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, created_at = EXCLUDED.created_at
+        """, (cache_key, json.dumps(data, default=str), datetime.now(timezone.utc)))
 
 
 def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
@@ -148,16 +203,22 @@ def save_profile(user_id: int, profile: dict):
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO profiles (user_id, name, dob, birth_time, city, latitude, longitude, utc_offset, interests, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO profiles (user_id, name, dob, birth_time, city, latitude, longitude, utc_offset,
+                                   interests, updated_at, numerology_system, current_name, language,
+                                   house_system)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
                 name=EXCLUDED.name, dob=EXCLUDED.dob, birth_time=EXCLUDED.birth_time, city=EXCLUDED.city,
                 latitude=EXCLUDED.latitude, longitude=EXCLUDED.longitude, utc_offset=EXCLUDED.utc_offset,
-                interests=EXCLUDED.interests, updated_at=EXCLUDED.updated_at
+                interests=EXCLUDED.interests, updated_at=EXCLUDED.updated_at,
+                numerology_system=EXCLUDED.numerology_system, current_name=EXCLUDED.current_name,
+                language=EXCLUDED.language, house_system=EXCLUDED.house_system
         """, (
             user_id, profile["name"], profile["dob"], profile["birth_time"],
             profile.get("city", ""), profile["latitude"], profile["longitude"], profile["utc_offset"],
             json.dumps(profile.get("interests", [])), datetime.now(timezone.utc),
+            profile.get("numerology_system", "pythagorean"), profile.get("current_name") or None,
+            profile.get("language", "en"), profile.get("house_system", "Placidus"),
         ))
 
 
@@ -175,6 +236,10 @@ def get_profile(user_id: int) -> dict | None:
         "city": row["city"] or "",
         "latitude": row["latitude"], "longitude": row["longitude"], "utc_offset": row["utc_offset"],
         "interests": json.loads(row["interests"] or "[]"),
+        "numerology_system": row["numerology_system"] or "pythagorean",
+        "current_name": row["current_name"] or "",
+        "language": row["language"] or "en",
+        "house_system": row["house_system"] or "Placidus",
     }
 
 

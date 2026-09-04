@@ -26,6 +26,127 @@ MIN_RESOLUTION = 400  # shortest side, px
 BLUR_VARIANCE_THRESHOLD = 60.0   # Laplacian variance; lower = blurrier
 DARK_THRESHOLD = 40
 BRIGHT_THRESHOLD = 235
+MIN_SKIN_TONE_RATIO = 0.12  # deliberately lenient — a coarse filter, not a verdict
+
+# ---------------------------------------------------------------------------
+# Closed feature vocabulary — deterministic reference data, not AI output.
+# This exists specifically to stop the AI from inventing feature names: the
+# vision prompt is built by handing it EXACTLY this list and instructing it
+# to only ever name a feature that appears here, and only when it's actually
+# visible. "Traditional meaning" here is the general, standard association —
+# short and neutral on purpose; the AI's job is to connect a SPECIFIC
+# observation on THIS photo to this general tradition, not to originate the
+# tradition itself.
+# ---------------------------------------------------------------------------
+
+PALM_FEATURES = {
+    "Life Line": {
+        "category": "line",
+        "typical_location": "curves around the base of the thumb, between the thumb and the fleshy "
+                            "Mount of Venus",
+        "traditional_meaning": "Vitality, physical wellbeing, and major life changes — not literally "
+                               "lifespan length, a common misconception.",
+    },
+    "Head Line": {
+        "category": "line",
+        "typical_location": "runs roughly horizontally across the middle of the palm, usually starting "
+                            "near the Life Line",
+        "traditional_meaning": "Thinking style, intellectual approach, and decision-making.",
+    },
+    "Heart Line": {
+        "category": "line",
+        "typical_location": "runs horizontally near the top of the palm, just below the fingers",
+        "traditional_meaning": "Emotional expression and relationship patterns.",
+    },
+    "Fate Line": {
+        "category": "line",
+        "typical_location": "runs vertically up the center of the palm, toward the middle finger — "
+                            "not present or clearly visible on every hand",
+        "traditional_meaning": "Career direction and the degree external circumstances shape one's path.",
+    },
+    "Sun/Apollo Line": {
+        "category": "line",
+        "typical_location": "a short vertical line rising toward the ring finger, when present",
+        "traditional_meaning": "Creative recognition, reputation, and a sense of fulfillment.",
+    },
+    "Mercury Line": {
+        "category": "line",
+        "typical_location": "runs from near the base of the palm up toward the little finger, when present",
+        "traditional_meaning": "Communication style and, in some traditions, business acumen.",
+    },
+    "Marriage/Relationship Lines": {
+        "category": "line",
+        "typical_location": "short horizontal lines on the outer edge of the palm, just below the little finger",
+        "traditional_meaning": "Significant close relationships — not a literal count of marriages, "
+                               "a common misconception.",
+    },
+    "Girdle of Venus": {
+        "category": "line",
+        "typical_location": "a curved line above the Heart Line, beneath the middle and ring fingers, "
+                            "when present",
+        "traditional_meaning": "Emotional sensitivity and intensity.",
+    },
+    "Mount of Venus": {
+        "category": "mount",
+        "typical_location": "the fleshy pad at the base of the thumb, encircled by the Life Line",
+        "traditional_meaning": "Warmth, vitality, and capacity for connection.",
+    },
+    "Mount of Jupiter": {
+        "category": "mount",
+        "typical_location": "at the base of the index finger",
+        "traditional_meaning": "Ambition, leadership, and self-confidence.",
+    },
+    "Mount of Saturn": {
+        "category": "mount",
+        "typical_location": "at the base of the middle finger",
+        "traditional_meaning": "Discipline, responsibility, and introspection.",
+    },
+    "Mount of Apollo": {
+        "category": "mount",
+        "typical_location": "at the base of the ring finger",
+        "traditional_meaning": "Creativity, self-expression, and desire for recognition.",
+    },
+    "Mount of Mercury": {
+        "category": "mount",
+        "typical_location": "at the base of the little finger",
+        "traditional_meaning": "Communication, wit, and business sense.",
+    },
+    "Mount of Mars": {
+        "category": "mount",
+        "typical_location": "two zones — 'upper' between the Heart Line and Mount of Mercury, "
+                            "'lower' between the thumb and Life Line",
+        "traditional_meaning": "Courage, resilience, and how one handles conflict.",
+    },
+    "Mount of Luna": {
+        "category": "mount",
+        "typical_location": "the lower outer edge of the palm, opposite the thumb",
+        "traditional_meaning": "Imagination, intuition, and inner life.",
+    },
+    "Hand Shape": {
+        "category": "shape",
+        "typical_location": "the overall proportions of the palm and fingers",
+        "traditional_meaning": "The classical Earth/Air/Fire/Water hand-shape system, describing a "
+                               "general temperament.",
+    },
+    "Thumb": {
+        "category": "shape",
+        "typical_location": "size, flexibility, and the angle it sits at relative to the palm",
+        "traditional_meaning": "Willpower and reasoning style.",
+    },
+    "Fingers": {
+        "category": "shape",
+        "typical_location": "relative length, spacing, and set of the four fingers",
+        "traditional_meaning": "Different traits per finger in most traditions — e.g. a long index "
+                               "finger with leadership, a long little finger with communication.",
+    },
+}
+
+# Marking types that can appear ON a line or mount (reported as a modifier
+# on a finding, not as their own top-level feature) — also a closed
+# vocabulary, for the same reason.
+MARKING_TYPES = ["Island", "Fork", "Break", "Cross", "Star", "Triangle", "Chain", "Grille", "Circle"]
+
+LIFE_AREAS = ["personality", "career", "finance", "relationships", "strengths", "challenges", "life_phases"]
 
 
 def _laplacian_variance(gray: np.ndarray) -> float:
@@ -71,7 +192,7 @@ def assess_image(pil_image: Image.Image) -> dict:
     skin_ratio = _skin_presence_ratio(rgb)
     # Broad, deliberately lenient band — this heuristic is a coarse filter,
     # not a verdict. Too little skin-tone content likely means no hand at all.
-    hand_likely = skin_ratio >= 0.12
+    hand_likely = skin_ratio >= MIN_SKIN_TONE_RATIO
 
     passed = resolution_ok and blur_ok and brightness_ok and hand_likely
 
