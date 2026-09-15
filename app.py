@@ -838,7 +838,8 @@ else:
                 st.markdown(styling.score_gauge(score, "Today"), unsafe_allow_html=True)
                 with st.expander("See the full reading & evidence trail"):
                     styling.scroll_panel("Full ANUPT reading", details)
-                    st.json(u)
+                    if developer_mode:
+                        st.json(u)
 
     # ========================================================================
     # PAGE: ASTROLOGY
