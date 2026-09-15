@@ -113,6 +113,19 @@ class TestDiagnosticsFailureModes:
         assert diag["outcome"] == "http_error"
         assert "500" in diag["last_error"]
 
+    def test_http_error_diagnostics_include_the_response_body_not_just_status(self, monkeypatch):
+        # Developer Mode needs the actual reason Google gave, not just the
+        # bare status code -- a bare "HTTP 500" doesn't distinguish a
+        # transient server hiccup from something the app owner needs to
+        # actually fix, and the server log isn't always reachable for
+        # every hosting setup.
+        monkeypatch.setenv("GEMINI_API_KEY", "onlykey1234567")
+        error_body = {"error": {"message": "The model is overloaded. Please try again later."}}
+        with patch("requests.post", return_value=_response(503, error_body)):
+            gc._call([{"role": "user", "parts": [{"text": "hi"}]}])
+        diag = gc.get_last_call_diagnostics()
+        assert "overloaded" in diag["last_error"]
+
     def test_no_candidates(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "onlykey1234567")
         with patch("requests.post", return_value=_response(200, {"candidates": []})):

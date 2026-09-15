@@ -370,7 +370,11 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
                 # Streamlit Cloud's "Manage app" logs) — never to the end user.
                 log.error("Gemini HTTP %s (model in use: %r): %s",
                           resp.status_code, _resolved_model, resp.text[:500])
-                _finish("http_error", f"HTTP {resp.status_code}")
+                # Also into the Developer Mode diagnostics — the server log
+                # isn't always easy for an app owner to reach (e.g. on some
+                # hosts it requires separate dashboard access), while
+                # Developer Mode is a UI panel right in the app itself.
+                _finish("http_error", f"HTTP {resp.status_code}: {resp.text[:300]}")
                 return _FRIENDLY_UNAVAILABLE
 
             key_manager.report_success("gemini", api_key)
