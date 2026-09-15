@@ -13,30 +13,43 @@ Run: streamlit run app.py
 """
 
 import hashlib
+import logging
 from datetime import date, time, datetime, timezone
 
 import streamlit as st
 from PIL import Image
 
+log = logging.getLogger("anupt.app")
+
 from engines import numerology, numerology_scoring, numerology_interpretation, astrology, astrology_scoring, astrology_interpretation, tarot, tarot_interpretation, palmistry, unified, youtube_client
 from ai import gemini_client
-from utils import styling, chart_svg, geocoding, image_processing, palm_annotation, nav_router
+from utils import styling, chart_svg, geocoding, image_processing, palm_annotation, nav_router, i18n
 from auth import store as auth_store
 
 st.set_page_config(page_title="ANUPT", page_icon="assets/logo_mark.png", layout="wide",
                     initial_sidebar_state="collapsed")
 styling.inject()
 
+# Developer Mode: OFF by default, opt-in only via a URL query parameter
+# (?dev=1) — deliberately not a visible in-app toggle, so it can never be
+# accidentally discovered/enabled by a regular user. Gates every place in
+# this file that would otherwise show raw JSON, internal scores, or other
+# technical/debugging detail (see the "Advanced Analysis"/diagnostics
+# sections below) — OFF means those sections simply don't render.
+developer_mode = st.query_params.get("dev") == "1"
+
 try:
     auth_store.init_db()
 except Exception as e:
+    log.error("Database connection failed: %s", e)
     st.error(
         "Couldn't connect to the database. This app needs a `DATABASE_URL` — a Postgres "
         "connection string from a free host like Neon or Supabase.\n\n"
         "- **Local:** add it to `.streamlit/secrets.toml` or set it as an environment variable.\n"
-        "- **Streamlit Community Cloud:** add it under your app's *Settings → Secrets*.\n\n"
-        f"Details: {e}"
+        "- **Streamlit Community Cloud:** add it under your app's *Settings → Secrets*."
     )
+    if developer_mode:
+        st.caption(f"🛠 Developer Mode detail: {e}")
     st.stop()
 
 # ----------------------------------------------------------------------------
@@ -64,6 +77,7 @@ defaults = {
     "nav_chat_history": [],       # [{"role": "user"/"assistant", "text": str, "action": str|None, "options": list|None}]
     "nav_chat_last_destination": None,  # for resolving follow-ups like "tell me more"
     "yt_insights_last": None,
+    "pending_language": None,  # language chosen via the topbar switcher before a profile exists yet
     "anupt_last": None,       # (score, summary, details, unified_evidence) from the last ANUPT reading
     "force_edit_profile_open": False,  # set True to auto-expand the Edit Profile section on next Profile visit
     "nav": "Home",
@@ -156,15 +170,32 @@ def run_youtube_insights_pipeline(zodiac_sign: str, time_period: str = "week",
 
 def render_auth_screen():
     """Login / sign-up gate — nothing else renders until this passes."""
-    styling.hero()
+    from utils import i18n
+    pending_lang = st.session_state.get("pending_language") or "en"
+    styling.hero(lang=pending_lang)
+
+    lang_col1, lang_col2, lang_col3 = st.columns([1, 1, 1])
+    with lang_col2:
+        codes = list(i18n.LANGUAGES.keys())
+        labels = [i18n.LANGUAGES[c] for c in codes]
+        selected_label = st.selectbox(
+            i18n.t("language_label", pending_lang), labels,
+            index=codes.index(pending_lang) if pending_lang in codes else 0,
+            key="auth_lang_select", label_visibility="collapsed",
+        )
+        selected_code = codes[labels.index(selected_label)]
+        if selected_code != pending_lang:
+            st.session_state.pending_language = selected_code
+            st.rerun()
+
     st.markdown("<div style='max-width:420px;margin:0 auto;'>", unsafe_allow_html=True)
-    tab_login, tab_signup = st.tabs(["Log in", "Sign up"])
+    tab_login, tab_signup = st.tabs([i18n.t("btn_log_in", pending_lang), i18n.t("btn_sign_up", pending_lang)])
 
     with tab_login:
         with st.form("login_form"):
-            u = st.text_input("Username")
-            p = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in", type="primary")
+            u = st.text_input(i18n.t("label_username", pending_lang))
+            p = st.text_input(i18n.t("label_password", pending_lang), type="password")
+            submitted = st.form_submit_button(i18n.t("btn_log_in", pending_lang), type="primary")
         if submitted:
             if not u or not p:
                 st.error("Enter both a username and password.")
@@ -179,10 +210,10 @@ def render_auth_screen():
 
     with tab_signup:
         with st.form("signup_form"):
-            su = st.text_input("Choose a username", key="signup_u")
-            sp1 = st.text_input("Choose a password", type="password", key="signup_p1")
-            sp2 = st.text_input("Confirm password", type="password", key="signup_p2")
-            signed_up = st.form_submit_button("Create account", type="primary")
+            su = st.text_input(i18n.t("label_choose_username", pending_lang), key="signup_u")
+            sp1 = st.text_input(i18n.t("label_choose_password", pending_lang), type="password", key="signup_p1")
+            sp2 = st.text_input(i18n.t("label_confirm_password", pending_lang), type="password", key="signup_p2")
+            signed_up = st.form_submit_button(i18n.t("btn_create_account", pending_lang), type="primary")
         if signed_up:
             if sp1 != sp2:
                 st.error("Passwords don't match.")
@@ -215,7 +246,18 @@ if st.session_state.profile is None:
     if _loaded is not None:
         st.session_state.profile = _loaded
 
-styling.top_bar(who=st.session_state.username)
+current_ui_lang = (st.session_state.profile or {}).get("language", "en")
+new_lang = styling.top_bar(who=st.session_state.username, current_lang=current_ui_lang)
+if new_lang:
+    if st.session_state.profile:
+        st.session_state.profile["language"] = new_lang
+        auth_store.save_profile(st.session_state.user_id, st.session_state.profile)
+    else:
+        # No profile saved yet (mid-onboarding) — hold the choice in
+        # session state so it still applies to the UI now, and pre-fills
+        # the language radio once they do save a profile.
+        st.session_state.pending_language = new_lang
+    st.rerun()
 
 if not profile_is_complete(st.session_state.profile) and st.session_state.nav != "Profile":
     st.session_state.nav = "Profile"
@@ -279,7 +321,8 @@ def render_city_picker():
         return
 
     query = st.text_input(
-        "Place of birth", placeholder="Type a city, then press Enter (e.g. Mumbai)",
+        i18n.t("label_place_of_birth", st.session_state.get("pending_language") or current_ui_lang),
+        placeholder="Type a city, then press Enter (e.g. Mumbai)",
         key="city_query_input",
     )
     if len(query.strip()) < 2:
@@ -311,14 +354,16 @@ def render_birth_details_form(existing: dict | None):
     simplified onboarding flow. Plain widgets (not st.form) so the city search can
     live-update on every keystroke."""
     p = existing or {}
+    from utils import i18n
+    lang = st.session_state.get("pending_language") or current_ui_lang
 
-    name = st.text_input("Full name", value=p.get("name", ""), key="pf_name")
+    name = st.text_input(i18n.t("label_full_name", lang), value=p.get("name", ""), key="pf_name")
     c1, c2 = st.columns(2)
     with c1:
-        dob = st.date_input("Date of birth", value=p.get("dob", date(1995, 1, 1)),
+        dob = st.date_input(i18n.t("label_date_of_birth", lang), value=p.get("dob", date(1995, 1, 1)),
                              min_value=date(1900, 1, 1), max_value=date.today(), key="pf_dob")
     with c2:
-        birth_time = st.time_input("Time of birth", value=p.get("birth_time", time(12, 0)), key="pf_time")
+        birth_time = st.time_input(i18n.t("label_time_of_birth", lang), value=p.get("birth_time", time(12, 0)), key="pf_time")
 
     # Pre-seed the picker from an existing saved profile the first time this renders,
     # so editing an already-complete profile doesn't force a re-search.
@@ -355,10 +400,13 @@ def render_birth_details_form(existing: dict | None):
              "Pythagorean is the more common Western system; Chaldean is the older one.",
     )
     language_choice = st.radio(
-        "Reading language", ["English", "मराठी (Marathi)"],
-        index=0 if p.get("language", "en") != "mr" else 1,
+        "Reading language", ["English", "हिंदी (Hindi)", "मराठी (Marathi)"],
+        index=["en", "hi", "mr"].index(
+            st.session_state.get("pending_language") or p.get("language", "en")
+        ) if (st.session_state.get("pending_language") or p.get("language", "en")) in ("en", "hi", "mr") else 0,
         key="pf_language", horizontal=True,
-        help="Applies to your Numerology and Astrology readings.",
+        help="Applies to your AI-generated readings across Astrology, Numerology, Tarot, and ANUPT, "
+             "and to the app's navigation and common labels throughout.",
     )
 
     st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
@@ -373,7 +421,7 @@ def render_birth_details_form(existing: dict | None):
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("Save profile", type="primary", key="pf_save"):
+    if st.button(i18n.t("btn_save_profile", current_ui_lang), type="primary", key="pf_save"):
         place = st.session_state.selected_birth_place
         if not name.strip():
             st.error("Please enter your name.")
@@ -392,7 +440,7 @@ def render_birth_details_form(existing: dict | None):
                     "utc_offset": utc_offset, "interests": interests,
                     "current_name": current_name.strip(),
                     "numerology_system": "chaldean" if system_choice == "Chaldean" else "pythagorean",
-                    "language": "mr" if "Marathi" in language_choice else "en",
+                    "language": "hi" if "Hindi" in language_choice else ("mr" if "Marathi" in language_choice else "en"),
                     "house_system": house_system_choice,
                 }
                 st.session_state.profile = new_profile
@@ -402,6 +450,13 @@ def render_birth_details_form(existing: dict | None):
                 st.session_state.chart = None
                 ensure_engines_computed()
             st.session_state.nav = "Home"
+            # Clear the pre-profile language choice now that the profile
+            # itself is the authoritative source — otherwise a stale value
+            # here could incorrectly pre-select the language radio's
+            # default the next time this form renders (e.g. editing the
+            # profile again later after switching languages via the topbar
+            # in between).
+            st.session_state.pending_language = None
             st.success("Profile saved — your reading is ready.")
             st.rerun()
 
@@ -457,13 +512,17 @@ def render_palm_capture_section(hand: str):
             st.rerun()
 
 
-def render_ask_anupt_section():
-    """The 'Ask ANUPT' navigation chatbot: User Request -> Intent Detection
-    (utils.nav_router, rule-based) -> Router (this function, sets nav) ->
-    Correct Feature -> Reading. AI (gemini_client.classify_navigation_intent)
-    only runs when the rule-based router finds no match at all."""
-    st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
-    st.markdown("##### 💬 Ask ANUPT")
+@st.dialog("💬 Ask ANUPT")
+def _ask_anupt_dialog():
+    """The 'Ask ANUPT' navigation chatbot, opened only when the floating
+    trigger button is tapped (see render_ask_anupt_trigger()) — never
+    permanently occupying screen space on the main reading pages.
+    User Request -> Intent Detection (utils.nav_router, rule-based) ->
+    Router (this function, sets nav) -> Correct Feature -> Reading. AI
+    (gemini_client.classify_navigation_intent) only runs when the
+    rule-based router finds no match at all. Conversation history
+    persists in st.session_state across opens/closes within the session,
+    same as before — only the VISIBILITY changed, not the underlying logic."""
     st.caption("Tell me what you're looking for, or tap a quick option — "
               "e.g. \"show my palm reading\" or \"life path number\".")
 
@@ -521,7 +580,14 @@ def render_ask_anupt_section():
                     "text": "I'm not sure exactly what you're looking for — here's everything ANUPT offers:",
                     "action": None, "options": nav_router.DESTINATIONS,
                 })
-        st.rerun()
+        # Deliberately NOT calling st.rerun() here: per Streamlit's own
+        # docs, calling st.rerun() inside a dialog function is the
+        # documented way to CLOSE it — which is correct for the "Open X"
+        # and disambiguation-option buttons below (they navigate away,
+        # so the dialog should close), but wrong here, since answering a
+        # question should keep the dialog open. The just-appended message
+        # above already shows up correctly below without a rerun, since
+        # the chat-history display loop runs later in this same pass.
 
     for i, turn in enumerate(st.session_state.nav_chat_history[-8:]):
         with st.chat_message("user" if turn["role"] == "user" else "assistant"):
@@ -538,6 +604,54 @@ def render_ask_anupt_section():
                             st.session_state.nav = opt
                             st.session_state.nav_chat_last_destination = opt
                             st.rerun()
+
+
+def render_ask_anupt_trigger():
+    """The compact, always-present floating trigger for the Ask ANUPT
+    chatbot — never the chatbot itself. Opens _ask_anupt_dialog() as a
+    proper modal (st.dialog) on click; the panel disappears entirely when
+    closed (Streamlit's own built-in dialog close button), leaving only
+    this small trigger behind. This is the ONLY thing that renders
+    inline on the page — no permanently-visible chat panel anywhere."""
+    with st.container(key="ask_anupt_trigger_row"):
+        if st.button("💬 Ask AI", key="ask_anupt_trigger"):
+            _ask_anupt_dialog()
+
+
+@st.dialog("💬 Ask AI Astrologer")
+def _ai_astrologer_dialog():
+    """The ANUPT page's reading-focused chat (career/love/'this year'/
+    anything, answered from topic-routed evidence — see route_topic() and
+    evidence_for_theme()) — opened only via the 'Open AI Astrologer chat'
+    button on the 'Ask AI Astrologer' tab, never shown inline. Distinct
+    from _ask_anupt_dialog() (that one is pure navigation help; this one
+    is an actual reading conversation), so it gets its own dialog and its
+    own history (st.session_state.chat_history) rather than sharing one.
+
+    Same lesson as _ask_anupt_dialog(): st.rerun() is the documented way
+    to CLOSE an @st.dialog, so it must NOT be called after answering a
+    question (that would close the dialog on every single message) —
+    only Streamlit's own close button/outside-click/ESC should end this
+    conversation."""
+    for turn in st.session_state.chat_history[-10:]:
+        with st.chat_message("user" if turn["role"] == "user" else "assistant"):
+            st.write(turn["text"])
+
+    question = st.chat_input("Ask about your career, love life, this year, anything...")
+    if question:
+        st.session_state.chat_history.append({"role": "user", "text": question})
+        with st.chat_message("user"):
+            st.write(question)
+        theme = route_topic(question)
+        context = evidence_for_theme(theme)
+        with st.chat_message("assistant"):
+            with st.spinner("Consulting the charts..."):
+                reply = gemini_client.chat_reply(st.session_state.chat_history, question, context)
+            st.write(reply)
+            if theme:
+                st.caption(f"Routed via: {theme.replace('_', ' ')}")
+        st.session_state.chat_history.append({"role": "model", "text": reply})
+        # Deliberately no st.rerun() here — see docstring above.
 
 
 # ============================================================================
@@ -601,27 +715,34 @@ if st.session_state.nav == "Profile":
                     st.markdown(r["narrative"])
 
         st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
-        with st.expander("AI service status (for the app owner)"):
-            st.caption(
-                "Checks whether the AI reading service is reachable. Useful if readings "
-                "show the 'service isn't available' notice. Your API key is never displayed."
-            )
-            if st.button("Run check", key="diag_btn"):
-                with st.spinner("Checking the AI service..."):
-                    st.json(gemini_client.diagnose())
+        if developer_mode:
+            st.caption("🛠 Developer Mode is ON (via ?dev=1) — technical detail below is never shown to regular users.")
+            with st.expander("AI service status (for the app owner)"):
+                st.caption(
+                    "Checks whether the AI reading service is reachable. Useful if readings "
+                    "show the 'service isn't available' notice. Your API key is never displayed."
+                )
+                if st.button("Run check", key="diag_btn"):
+                    with st.spinner("Checking the AI service..."):
+                        st.json(gemini_client.diagnose())
 
-        with st.expander("YouTube Insights key status (for the app owner)"):
-            st.caption(
-                "Shows which configured YouTube API key(s) are currently available vs. "
-                "cooling down after a quota limit, for diagnosing the YouTube Insights tab "
-                "on the Astrology page. Keys are always shown masked."
-            )
-            if st.button("Check YouTube keys", key="yt_diag_btn"):
-                status = youtube_client.youtube_key_status()
-                if not status:
-                    st.info("No YOUTUBE_API_KEY configured yet — see secrets.toml.example.")
-                else:
-                    st.json(status)
+            with st.expander("Last AI call diagnostics"):
+                st.caption("Model, latency, fallback attempts, and outcome for the most recent "
+                          "AI request — never shown outside Developer Mode.")
+                st.json(gemini_client.get_last_call_diagnostics())
+
+            with st.expander("YouTube Insights key status (for the app owner)"):
+                st.caption(
+                    "Shows which configured YouTube API key(s) are currently available vs. "
+                    "cooling down after a quota limit, for diagnosing the YouTube Insights tab "
+                    "on the Astrology page. Keys are always shown masked."
+                )
+                if st.button("Check YouTube keys", key="yt_diag_btn"):
+                    status = youtube_client.youtube_key_status()
+                    if not status:
+                        st.info("No YOUTUBE_API_KEY configured yet — see secrets.toml.example.")
+                    else:
+                        st.json(status)
 
         st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
         with st.expander("Delete my account and all data"):
@@ -670,8 +791,8 @@ else:
     # PAGE: HOME
     # ========================================================================
     if st.session_state.nav == "Home":
-        styling.hero()
-        render_ask_anupt_section()
+        styling.hero(lang=current_ui_lang)
+        render_ask_anupt_trigger()
         wcol, tcol = st.columns([1, 1.15], gap="large")
         with wcol:
             st.markdown(f'<div class="anupt-wheel-wrap">{chart_svg.natal_wheel_svg(chart)}</div>',
@@ -682,7 +803,7 @@ else:
                 st.markdown(f"### {p['name']}")
             with edit_col:
                 st.markdown("<div style='margin-top:0.6rem'></div>", unsafe_allow_html=True)
-                if st.button(":material/edit: Edit", key="home_edit_profile",
+                if st.button(f":material/edit: {i18n.t('btn_edit_profile', current_ui_lang)}", key="home_edit_profile",
                              help="Edit your name, birth date/time, or city"):
                     st.session_state.force_edit_profile_open = True
                     st.session_state.nav = "Profile"
@@ -723,12 +844,8 @@ else:
     # PAGE: ASTROLOGY
     # ========================================================================
     elif st.session_state.nav == "Astrology":
-        st.subheader("Astrology")
-        st.caption(
-            "A traditional symbolic system passed down over centuries, not a scientifically "
-            "validated method of prediction — the positions below are precise astronomical "
-            "calculations; what they're said to mean is interpretive tradition."
-        )
+        st.subheader(i18n.t("page_astrology", current_ui_lang))
+        st.caption(i18n.t("disclaimer_astrology", current_ui_lang))
 
         tab_overview, tab_western, tab_cycles, tab_areas, tab_special, tab_youtube = st.tabs(
             ["Overview", "Western Chart", "Life Cycles", "Life Areas", "Specialized Reading", "YouTube Insights"]
@@ -739,8 +856,8 @@ else:
             st.caption("Vedic (sidereal) system · whole-sign houses")
 
             chart_evidence = astrology_interpretation.build_chart_evidence(chart)
-            st.markdown(styling.rule_based_badge(), unsafe_allow_html=True)
-            st.markdown("##### Key Findings")
+            st.markdown(styling.rule_based_badge(current_ui_lang), unsafe_allow_html=True)
+            st.markdown(f"##### {i18n.t('key_findings', current_ui_lang)}")
             st.caption("Your strongest placements, straight from the rule engine — visible instantly, "
                       "no AI call needed to see this much.")
             for placement in chart_evidence["placements"][:4]:
@@ -766,8 +883,23 @@ else:
             if reading_type == "Question" and not question:
                 st.info("Type your question above first.")
             elif st.button("Get my Astrology summary", type="primary", key="astro_generate"):
-                enriched_chart = dict(chart)
-                enriched_chart["rule_based_findings"] = chart_evidence
+                # Lean payload: only what the AI actually needs, not the full
+                # raw chart. chart_evidence (already computed above) already
+                # covers every planet's sign/house/dignity plus aspects, each
+                # with a rule-based interpretation — sending the raw chart
+                # too would just duplicate that in a much more verbose,
+                # less-useful form. dasha/nakshatra aren't captured in
+                # chart_evidence at all, so those are kept as lean context.
+                # Trimmed to the same top-N strongest placements/tightest
+                # aspects already shown as "Key Findings" in the UI above —
+                # the AI doesn't need all 12 planets to write a focused
+                # reading, and this keeps the AI's synthesis grounded in
+                # exactly what the user can independently see and verify.
+                lean_context = {"nakshatra": chart["nakshatra"], "nakshatra_pada": chart["nakshatra_pada"],
+                                "dasha": chart["dasha"]}
+                trimmed_evidence = {"placements": chart_evidence["placements"][:5],
+                                     "aspects": chart_evidence["aspects"][:4]}
+                enriched_chart = {"context": lean_context, "rule_based_findings": trimmed_evidence}
                 with st.spinner("Reading your chart..."):
                     score, summary, details = gemini_client.generate_engine_reading(
                         "Astrology", enriched_chart, reading_type, question, language=p.get("language", "en")
@@ -779,7 +911,7 @@ else:
                 score, summary, details = st.session_state.astro_last
                 styling.summary_card(f"{reading_type} · Astrology", summary)
                 st.markdown(styling.score_gauge(score, "This reading"), unsafe_allow_html=True)
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel("Full Astrology reading", details)
 
             with st.expander("Advanced Analysis — full chart"):
@@ -929,9 +1061,12 @@ else:
             )
             if st.button(f"Get my {focus_choice} reading", type="primary", key="astro_special_generate"):
                 life_scores = astrology_scoring.theme_scores(chart)
-                enriched_data = dict(chart)
-                enriched_data["life_area_scores"] = life_scores
-                enriched_data["yogas"] = astrology.detect_yogas(chart)
+                lean_context = {"nakshatra": chart["nakshatra"], "dasha": chart["dasha"],
+                                 "life_area_scores": life_scores, "yogas": astrology.detect_yogas(chart)}
+                full_evidence = astrology_interpretation.build_chart_evidence(chart)
+                trimmed_evidence = {"placements": full_evidence["placements"][:5],
+                                     "aspects": full_evidence["aspects"][:4]}
+                enriched_data = {"context": lean_context, "rule_based_findings": trimmed_evidence}
                 with st.spinner(f"Reading your chart for {focus_choice.lower()}..."):
                     score, summary, details = gemini_client.generate_engine_reading(
                         "Astrology", enriched_data, "Life", special_question or None,
@@ -945,7 +1080,7 @@ else:
                 f_choice, score, summary, details = st.session_state.astro_special_last
                 styling.summary_card(f"{f_choice} · Astrology", summary)
                 st.markdown(styling.score_gauge(score, "This reading"), unsafe_allow_html=True)
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel(f"Full {f_choice} reading", details)
 
         # -------------------------------------------------------------
@@ -990,13 +1125,13 @@ else:
                     st.caption(f"Based on {evidence['relevant_prediction_count']} recent video(s) "
                               f"mentioning {yt_sign}.")
 
-                    with st.expander("Explore the full reading"):
+                    with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                         styling.scroll_panel("Full YouTube Insights reading", result["details"])
 
                     if evidence["evidence_by_theme"]:
                         st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
                         st.markdown("##### Sources — where each theme comes from")
-                        st.markdown(styling.rule_based_badge(), unsafe_allow_html=True)
+                        st.markdown(styling.rule_based_badge(current_ui_lang), unsafe_allow_html=True)
                         for theme in evidence["ranked_themes"]:
                             entries = evidence["evidence_by_theme"].get(theme, [])
                             if not entries:
@@ -1012,12 +1147,8 @@ else:
     # PAGE: NUMEROLOGY
     # ========================================================================
     elif st.session_state.nav == "Numerology":
-        st.subheader("Numerology")
-        st.caption(
-            "A belief-based self-reflection tradition, not a scientifically validated "
-            "method of prediction — treat these numbers as a structured way to think "
-            "about yourself, not a guarantee of what will happen."
-        )
+        st.subheader(i18n.t("page_numerology", current_ui_lang))
+        st.caption(i18n.t("disclaimer_numerology", current_ui_lang))
         system_used = p.get("numerology_system", "pythagorean").title()
         st.caption(f"Calculated with the {system_used} system · change this anytime in Profile → Edit Profile.")
 
@@ -1036,9 +1167,9 @@ else:
                 unsafe_allow_html=True,
             )
 
-            profile_evidence = numerology_interpretation.build_profile_evidence(num)
-            st.markdown(styling.rule_based_badge(), unsafe_allow_html=True)
-            st.markdown("##### Key Findings")
+            profile_evidence = numerology_interpretation.build_profile_evidence(num, current_ui_lang)
+            st.markdown(styling.rule_based_badge(current_ui_lang), unsafe_allow_html=True)
+            st.markdown(f"##### {i18n.t('key_findings', current_ui_lang)}")
             st.caption("Your core numbers and how they relate — straight from the rule engine, "
                       "visible instantly, no AI call needed to see this much.")
             for n in profile_evidence["numbers"][:3]:
@@ -1070,8 +1201,14 @@ else:
             if reading_type == "Question" and not question:
                 st.info("Type your question above first.")
             elif st.button("Get my Numerology summary", type="primary", key="num_generate"):
-                enriched_num = dict(num)
-                enriched_num["rule_based_findings"] = profile_evidence
+                # Lean payload: profile_evidence (already computed above) already
+                # covers every core number with a rule-based interpretation;
+                # the raw `num` profile duplicates that in a far more verbose,
+                # less-useful form (full calculation trails for every number).
+                # personal_year isn't part of profile_evidence, so it's kept
+                # as lean context since it's often specifically relevant.
+                lean_context = {"personal_year": num["personal_year"]["value"]}
+                enriched_num = {"context": lean_context, "rule_based_findings": profile_evidence}
                 with st.spinner("Reading your numbers..."):
                     score, summary, details = gemini_client.generate_engine_reading(
                         "Numerology", enriched_num, reading_type, question, language=p.get("language", "en")
@@ -1083,7 +1220,7 @@ else:
                 score, summary, details = st.session_state.num_last
                 styling.summary_card(f"{reading_type} · Numerology", summary)
                 st.markdown(styling.score_gauge(score, "This reading"), unsafe_allow_html=True)
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel("Full Numerology reading", details)
 
             with st.expander("Explore your numbers"):
@@ -1145,8 +1282,9 @@ else:
             )
             if st.button(f"Get my {focus_choice} reading", type="primary", key="num_special_generate"):
                 life_scores = numerology_scoring.theme_scores(num)
-                enriched_data = dict(num)
-                enriched_data["life_area_scores"] = life_scores
+                lean_context = {"personal_year": num["personal_year"]["value"], "life_area_scores": life_scores}
+                enriched_data = {"context": lean_context,
+                                  "rule_based_findings": numerology_interpretation.build_profile_evidence(num, current_ui_lang)}
                 with st.spinner(f"Reading your numbers for {focus_choice.lower()}..."):
                     score, summary, details = gemini_client.generate_engine_reading(
                         "Numerology", enriched_data, "Life", special_question or None,
@@ -1160,7 +1298,7 @@ else:
                 f_choice, score, summary, details = st.session_state.num_special_last
                 styling.summary_card(f"{f_choice} · Numerology", summary)
                 st.markdown(styling.score_gauge(score, "This reading"), unsafe_allow_html=True)
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel(f"Full {f_choice} reading", details)
 
         # -------------------------------------------------------------
@@ -1192,12 +1330,8 @@ else:
     # PAGE: PALMISTRY
     # ========================================================================
     elif st.session_state.nav == "Palmistry":
-        st.subheader("Palmistry")
-        st.caption(
-            "Palmistry is a traditional, divinatory practice passed down over centuries — it is "
-            "not scientifically validated. Every finding below is an AI-vision observation of "
-            "YOUR actual photo, shown with its own confidence level, never a deterministic measurement."
-        )
+        st.subheader(i18n.t("page_palmistry", current_ui_lang))
+        st.caption(i18n.t("disclaimer_palmistry", current_ui_lang))
 
         hand = st.radio("Which hand?", ["Left", "Right"], horizontal=True, key="palm_hand")
         hand_key = hand.lower()
@@ -1332,7 +1466,8 @@ else:
     # PAGE: TAROT
     # ========================================================================
     elif st.session_state.nav == "Tarot":
-        st.subheader("Tarot")
+        st.subheader(i18n.t("page_tarot", current_ui_lang))
+        st.caption(i18n.t("disclaimer_tarot", current_ui_lang))
         spread_label = st.selectbox("Spread", ["Daily guidance (1 card)", "Past · Present · Future (3 cards)",
                                                  "Five-card spread"])
         spread_key = {"Daily guidance (1 card)": "one_card", "Past · Present · Future (3 cards)": "three_card",
@@ -1356,8 +1491,8 @@ else:
             st.markdown("<br>", unsafe_allow_html=True)
 
             spread_evidence = tarot_interpretation.build_spread_evidence(cards)
-            st.markdown(styling.rule_based_badge(), unsafe_allow_html=True)
-            st.markdown("##### Key Findings")
+            st.markdown(styling.rule_based_badge(current_ui_lang), unsafe_allow_html=True)
+            st.markdown(f"##### {i18n.t('key_findings', current_ui_lang)}")
             st.caption("Each card's traditional meaning in its drawn position — visible instantly, "
                       "no AI call needed to see this much.")
             for c in spread_evidence["cards"]:
@@ -1377,7 +1512,12 @@ else:
                 placeholder="e.g. What should I focus on this week?",
             )
             if st.button("Get my Tarot summary", type="primary"):
-                enriched_cards = {"cards": cards, "rule_based_findings": spread_evidence}
+                # Lean payload: spread_evidence already has each card's name,
+                # position, orientation, and a composed interpretation
+                # (including its keywords) — the raw card dicts underneath
+                # (full upright/reversed keyword text, career/finance/love
+                # breakdowns) would just duplicate that more verbosely.
+                enriched_cards = {"rule_based_findings": spread_evidence}
                 with st.spinner("Reading the cards..."):
                     score, summary, details = gemini_client.generate_engine_reading(
                         "Tarot", enriched_cards, "Tarot spread", tarot_question or None,
@@ -1390,7 +1530,7 @@ else:
                 score, summary, details = st.session_state.tarot_last
                 styling.summary_card("Tarot", summary)
                 st.markdown(styling.score_gauge(score, "This spread"), unsafe_allow_html=True)
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel("Full Tarot reading", details)
 
         with st.expander("Deck integrity check"):
@@ -1400,7 +1540,7 @@ else:
     # PAGE: ANUPT (combined insights across every engine + AI Astrologer chat)
     # ========================================================================
     elif st.session_state.nav == "ANUPT":
-        st.subheader("ANUPT")
+        st.subheader(i18n.t("page_anupt", current_ui_lang))
         st.caption("Every engine, fused into one voice — where Astrology, Numerology, "
                    "Tarot and (if you've done one) your Palmistry reading agree.")
         tab_generate, tab_chat = st.tabs(["Get My Insights", "Ask AI Astrologer"])
@@ -1435,7 +1575,7 @@ else:
                 # interpretation, basis) so the rendering loop below doesn't need to
                 # know each engine's own internal dict shape.
                 astro_placements = astrology_interpretation.build_chart_evidence(chart)["placements"][:2]
-                num_numbers = numerology_interpretation.build_profile_evidence(num)["numbers"][:2]
+                num_numbers = numerology_interpretation.build_profile_evidence(num, current_ui_lang)["numbers"][:2]
                 tarot_cards = tarot_interpretation.build_spread_evidence(cards)["cards"]
                 source_evidence = {
                     "Astrology": [
@@ -1474,12 +1614,12 @@ else:
                 ]
                 styling.insight_grid(cards_for_grid)
 
-                with st.expander("Explore the full reading"):
+                with st.expander(i18n.t("btn_open_full_reading", current_ui_lang)):
                     styling.scroll_panel("Full ANUPT reading", details)
 
                 st.markdown("<div class='anupt-divider'></div>", unsafe_allow_html=True)
                 st.markdown("##### Sources — how each system contributed")
-                st.markdown(styling.rule_based_badge(), unsafe_allow_html=True)
+                st.markdown(styling.rule_based_badge(current_ui_lang), unsafe_allow_html=True)
                 st.caption("A quick look at what each engine found on its own — open any of "
                           "them for the complete reading.")
 
@@ -1503,30 +1643,19 @@ else:
                         st.session_state.nav = "Palmistry"
                         st.rerun()
 
-                with st.expander("Advanced Analysis — full evidence trail (raw)"):
-                    st.json(u)
+                if developer_mode:
+                    with st.expander("Advanced Analysis — full evidence trail (raw, Developer Mode only)"):
+                        st.json(u)
 
         with tab_chat:
             st.caption("Questions are routed to the relevant systems first, then answered — "
                        "your whole profile isn't dumped into every message.")
-            for turn in st.session_state.chat_history:
-                with st.chat_message("user" if turn["role"] == "user" else "assistant"):
-                    st.write(turn["text"])
-
-            question = st.chat_input("Ask about your career, love life, this year, anything...")
-            if question:
-                st.session_state.chat_history.append({"role": "user", "text": question})
-                with st.chat_message("user"):
-                    st.write(question)
-                theme = route_topic(question)
-                context = evidence_for_theme(theme)
-                with st.chat_message("assistant"):
-                    with st.spinner("Consulting the charts..."):
-                        reply = gemini_client.chat_reply(st.session_state.chat_history, question, context)
-                    st.write(reply)
-                    if theme:
-                        st.caption(f"Routed via: {theme.replace('_', ' ')}")
-                st.session_state.chat_history.append({"role": "model", "text": reply})
+            if st.session_state.chat_history:
+                last_turn = st.session_state.chat_history[-1]
+                preview = last_turn["text"][:120] + ("…" if len(last_turn["text"]) > 120 else "")
+                st.caption(f"Last message: {preview}")
+            if st.button("💬 Open AI Astrologer chat", key="open_ai_astrologer_chat", type="primary"):
+                _ai_astrologer_dialog()
 
 # ----------------------------------------------------------------------------
 # Bottom navigation — rendered last; CSS pins it to the viewport bottom
@@ -1534,4 +1663,4 @@ else:
 # st.session_state.nav itself via on_click, so no return-value handling
 # or manual rerun is needed here.
 # ----------------------------------------------------------------------------
-styling.bottom_nav(active=st.session_state.nav)
+styling.bottom_nav(active=st.session_state.nav, lang=current_ui_lang)

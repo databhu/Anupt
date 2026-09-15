@@ -79,6 +79,10 @@ NAV_ITEMS = [
     ("ANUPT", "hub", "ANUPT"),
     ("Profile", "person", "You"),
 ]
+_NAV_I18N_KEY = {
+    "Home": "nav_home", "Astrology": "nav_astro", "Numerology": "nav_nums",
+    "Palmistry": "nav_palm", "Tarot": "nav_tarot", "ANUPT": "nav_anupt", "Profile": "nav_you",
+}
 
 CSS = """
 <style>
@@ -177,6 +181,16 @@ footer {
 }
 .anupt-topbar-inner .who { margin-left: auto; color: var(--mist); font-size: 0.82rem; }
 
+/* Compact language switcher inside the topbar — must stay within the
+   topbar's slim single-row height, so override Streamlit's default
+   selectbox sizing rather than letting it push the row taller. */
+.st-key-topbar div[data-testid="stSelectbox"] { min-width: 0; }
+.st-key-topbar div[data-testid="stSelectbox"] > div { min-height: 2.1rem; }
+.st-key-topbar div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    min-height: 2.1rem; padding-top: 0.15rem; padding-bottom: 0.15rem; font-size: 0.8rem;
+}
+.st-key-topbar [data-testid="stVerticalBlock"] { gap: 0 !important; }
+
 /* ---------- Hero (Home page only) ---------- */
 .anupt-hero { text-align: center; padding: 0.4rem 1rem 1.2rem 1rem; }
 .anupt-hero .hero-mark { width: 84px; height: auto; margin-bottom: 0.2rem; display: inline-block; }
@@ -199,18 +213,42 @@ footer {
     box-shadow: 0 -6px 24px rgba(29,24,48,0.06);
     padding: 0.3rem 0.3rem calc(0.3rem + env(safe-area-inset-bottom, 0px)) 0.3rem;
 }
+
+/* ---------- Floating "Ask AI" chat trigger ---------- */
+/* Fixed above the bottom nav (which is ~3.7rem tall including its own
+   padding) so it never overlaps nav buttons, and below the bottom nav's
+   own z-index so the nav bar always stays on top if they ever visually
+   collide during a transition. This is the ONLY chat-related element
+   that's ever visible without the user tapping it first — see
+   render_ask_anupt_trigger() / _ask_anupt_dialog() in app.py. */
+.st-key-ask_anupt_trigger_row {
+    position: fixed; right: 1rem; bottom: calc(4.4rem + env(safe-area-inset-bottom, 0px));
+    z-index: 990; width: auto !important;
+}
+.st-key-ask_anupt_trigger_row .stButton { width: auto !important; }
+.st-key-ask_anupt_trigger_row .stButton button {
+    border-radius: 999px !important; padding: 0.65rem 1.1rem !important; min-height: 0 !important;
+    box-shadow: 0 6px 20px rgba(29,24,48,0.18) !important; font-size: 0.85rem !important;
+}
 .st-key-bottomnav > div { max-width: var(--content-max); margin: 0 auto; }
 .st-key-bottomnav [data-testid="stHorizontalBlock"] { gap: 0.1rem; align-items: stretch; flex-wrap: nowrap !important; }
 .st-key-bottomnav [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
 .st-key-bottomnav .stButton { width: 100%; }
 .st-key-bottomnav .stButton button {
-    background: transparent !important; border: none !important; box-shadow: none !important;
     width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 1px; color: var(--mist) !important; font-size: 0.6rem; font-weight: 600;
     padding: 0.3rem 0.05rem !important; min-height: 3.1rem; border-radius: 12px !important;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.st-key-bottomnav .stButton button:hover { background: var(--surface-alt) !important; }
+/* Background/border need the extra [kind="secondary"] specificity to
+   reliably beat the generic .stButton button[kind="secondary"] rule
+   elsewhere in this file — both selectors previously had identical
+   specificity (0,2,1), so which one won came down to source order alone,
+   a fragile coincidence rather than a guarantee. This one is strictly
+   more specific (0,3,1), so it wins regardless of where either rule is
+   defined. */
+.st-key-bottomnav .stButton button[kind="secondary"] { background: transparent !important; border: none !important; box-shadow: none !important; }
+.st-key-bottomnav .stButton button[kind="secondary"]:hover { background: var(--surface-alt) !important; }
 .st-key-bottomnav .stButton button p {
     font-size: 0.6rem !important; margin: 0 !important; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
@@ -551,6 +589,27 @@ div[data-testid="stRadio"] label, div[data-testid="stCheckbox"] label { min-heig
 
 /* Never allow horizontal scroll from an oversized child */
 .stApp, .block-container { overflow-x: hidden; }
+
+/* ---------- Dropdown/select overlay robustness ---------- */
+/* Streamlit's own selectbox/multiselect dropdowns already render via a
+   portal with a very high z-index (verified: ~1,000,000+, well above this
+   app's own fixed topbar/bottomnav at 998/999) and correctly flip upward
+   when there's insufficient room below — so this isn't fixing an observed
+   clipping bug, it's an explicit belt-and-suspenders guarantee that stays
+   true even if that internal behavior ever changes. Never let any
+   ancestor's overflow:hidden clip an open dropdown popover, whatever
+   container it happens to be inside.
+ */
+[data-baseweb="popover"], [data-baseweb="menu"], [role="listbox"] {
+    z-index: 999999 !important;
+}
+/* Selected/highlighted option contrast — explicit rather than left to
+   BaseWeb's own default, so this can't silently drift with a library
+   update. */
+[data-baseweb="menu"] li[aria-selected="true"] {
+    background: rgba(194, 21, 126, 0.12) !important; color: var(--ink) !important;
+}
+[data-baseweb="menu"] li:hover { background: var(--surface-alt) !important; }
 img, svg { max-width: 100%; height: auto; }
 </style>
 """
@@ -560,27 +619,66 @@ def inject():
     st.markdown(CSS, unsafe_allow_html=True)
 
 
-def top_bar(who: str | None = None):
-    """Slim sticky header shown on every page — replaces the old sidebar brand mark."""
+def top_bar(who: str | None = None, current_lang: str = "en") -> str | None:
+    """Slim sticky header shown on every page — logo, wordmark, username,
+    and a compact language switcher (the 'easy switcher' the whole app's
+    UI chrome reads from, via utils.i18n.t()). Returns the newly-selected
+    language code if the person just changed it this render, else None —
+    callers should only act (persist + rerun) on a non-None return, to
+    avoid a redundant write on every single rerun.
+
+    Note on a real bug this fixes: a Streamlit selectbox with a `key`
+    does NOT re-read its `index=` argument on later reruns once that key
+    already has a stored value — by design, so a widget respects direct
+    user interaction rather than snapping back to a computed default.
+    But that means if `current_lang` changes for some OTHER reason (the
+    onboarding form just saved a different language, or the profile was
+    freshly loaded), the widget's own STALE stored value would look
+    exactly like a fresh user change on the next render and incorrectly
+    overwrite the just-set language. Tracking the last externally-known
+    language and explicitly re-syncing the widget's stored value whenever
+    it changes for a reason other than this specific widget is what
+    avoids that."""
+    from utils import i18n
+
+    if st.session_state.get("_topbar_lang_tracked") != current_lang:
+        st.session_state["topbar_lang_select"] = i18n.LANGUAGES.get(current_lang, i18n.LANGUAGES["en"])
+        st.session_state["_topbar_lang_tracked"] = current_lang
+
     who_html = f'<span class="who">{who}</span>' if who else ""
     with st.container(key="topbar"):
-        st.markdown(
-            f"""<div class="anupt-topbar-inner">
-            <img src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT" />
-            <span class="word">ANUPT</span>{who_html}
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        head_col, lang_col = st.columns([3, 1.35])
+        with head_col:
+            st.markdown(
+                f"""<div class="anupt-topbar-inner">
+                <img src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT" />
+                <span class="word">ANUPT</span>{who_html}
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        with lang_col:
+            codes = list(i18n.LANGUAGES.keys())
+            labels = [i18n.LANGUAGES[c] for c in codes]
+            selected_label = st.selectbox(
+                i18n.t("language_label", current_lang), labels,
+                key="topbar_lang_select", label_visibility="collapsed",
+            )
+            selected_code = codes[labels.index(selected_label)]
+            if selected_code != current_lang:
+                st.session_state["_topbar_lang_tracked"] = selected_code
+                return selected_code
+    return None
 
 
-def hero():
-    """Full brand moment — Home page only now, not repeated on every page."""
+def hero(lang: str = "en"):
+    """Full brand moment — Home page and the pre-login screen."""
+    from utils import i18n
     st.markdown(
         f"""<div class="anupt-hero">
         <img class="hero-mark" src="data:image/png;base64,{_LOGO_MARK}" alt="ANUPT emblem" />
         <div class="brand-word">ANUPT</div>
-        <div class="tagline">Insights for a better you</div>
-        <div class="systems-line">Astrology &nbsp;·&nbsp; Numerology &nbsp;·&nbsp; Palmistry &nbsp;·&nbsp; Tarot</div>
+        <div class="tagline">{i18n.t('tagline', lang)}</div>
+        <div class="systems-line">{i18n.t('systems_line', lang)}</div>
         </div>""",
         unsafe_allow_html=True,
     )
@@ -596,7 +694,7 @@ def _set_nav(key: str):
     st.session_state.nav = key
 
 
-def bottom_nav(active: str):
+def bottom_nav(active: str, lang: str = "en"):
     """Renders the fixed bottom navigation bar. Each button updates
     st.session_state.nav directly via on_click — callers don't need to do
     anything with a return value or call st.rerun() themselves.
@@ -604,13 +702,15 @@ def bottom_nav(active: str):
     phones the CSS hides the on-screen label to stop it wrapping/truncating
     (icon-only there), so the tooltip/accessible-name is what keeps the
     button's purpose available rather than silently dropping the label."""
+    from utils import i18n
     with st.container(key="bottomnav"):
         cols = st.columns(len(NAV_ITEMS))
         for col, (key, icon, short_label) in zip(cols, NAV_ITEMS):
             is_active = key == active
+            display_label = i18n.t(_NAV_I18N_KEY[key], lang)
             with col:
                 st.button(
-                    f":material/{icon}: {short_label}", key=f"nav_{key}",
+                    f":material/{icon}: {display_label}", key=f"nav_{key}",
                     type="primary" if is_active else "secondary",
                     on_click=_set_nav, args=(key,), help=key,
                 )
@@ -883,11 +983,12 @@ def dignity_badge(dignity: str) -> str:
     return f'<span class="anupt-dignity-badge anupt-dignity-{css_class}">{dignity}</span>'
 
 
-def rule_based_badge() -> str:
+def rule_based_badge(lang: str = "en") -> str:
     """A small visual tag marking content as coming from the deterministic
     rule engine, not the AI — the concrete, always-visible answer to
     'why should I trust this' for anything wearing this badge."""
-    return '<span class="anupt-rule-badge">⚙ Rule-Based — no AI involved</span>'
+    from utils import i18n
+    return f'<span class="anupt-rule-badge">{i18n.t("rule_based_badge", lang)}</span>'
 
 
 def key_finding_card(title: str, strength_label: str, strength_tier: int, interpretation: str,

@@ -51,25 +51,50 @@ API_BASE = f"{API_ROOT}/models"
 # renames something" and "the app keeps working". Google's own 404 error for the
 # previous default (gemini-2.5-flash, deprecated for new users) pointed here.
 DEFAULT_MODEL = "gemini-3.6-flash"
+# Google's own maintained alias — "gets hot-swapped with every new
+# release" per the official model docs, specifically so callers don't
+# have to track version-specific deprecations themselves. Tried BEFORE
+# DEFAULT_MODEL/discovery, since aliases are meant to be called directly
+# and generally aren't listed as their own entry in ListModels (so
+# checking "is this in the discovered list" would almost always miss it).
+# If it 404s, _post_with_fallback's existing retry logic blocklists it
+# like any other model and falls through to DEFAULT_MODEL/discovery below
+# — this is an additional first attempt layered on top of the existing
+# fallback chain, not a replacement for it.
+STABLE_ALIAS = "gemini-flash-latest"
 TIMEOUT = 45
 
 log = logging.getLogger("anupt.gemini")
 
 SYSTEM_GUARDRAILS = (
-    "You are the AI writer for ANUPT, a spiritual-reflection app. You will be given "
-    "structured, already-calculated evidence from deterministic Astrology, Numerology "
-    "and Tarot engines. Your job is ONLY to interpret, correlate and communicate this "
-    "evidence clearly and warmly. Rules:\n"
-    "1. Never invent a planetary position, number, or card — use only what's given.\n"
+    "You are the AI writer for ANUPT, a spiritual-reflection consumer app. You will be given "
+    "structured, already-calculated evidence from deterministic Astrology, Numerology, Tarot "
+    "or Palmistry engines. Your ONLY job is to interpret, correlate and communicate this "
+    "evidence clearly, warmly and CONCISELY, in plain natural-language prose a general "
+    "consumer will read on a phone screen. Rules:\n"
+    "1. Never invent a planetary position, number, card, or finding — use only what's given "
+    "in the structured evidence; never fabricate information beyond it.\n"
     "2. Explicitly mention which systems support each insight you raise.\n"
-    "3. Frame everything as spiritual/personal-reflection guidance, never as a "
-    "guaranteed factual outcome.\n"
-    "4. Avoid unsafe high-stakes advice (medical, legal, financial-investment "
-    "certainty) — encourage the user to consult a relevant professional for those.\n"
+    "3. Frame everything as spiritual/personal-reflection guidance, never as a guaranteed "
+    "factual outcome — clearly distinguish an 'indication' or 'tendency' from a certainty. "
+    "Avoid presenting any astrological or spiritual interpretation as a guaranteed fact.\n"
+    "4. Avoid unsafe high-stakes advice (medical, legal, financial-investment certainty) — "
+    "encourage the user to consult a relevant professional for those.\n"
     "5. Keep tone encouraging, honest, and grounded — not vague fortune-cookie text.\n"
-    "6. Write in plain prose only — no markdown (**, __, #, bullet dashes, etc.), "
-    "since your output is displayed as-is, not rendered from markdown. Use plain "
-    "paragraph breaks (a blank line) instead of headings or emphasis marks."
+    "6. Write in plain prose only — no markdown (**, __, #, bullet dashes, etc.), no JSON, "
+    "no Python dictionaries or other code/data structures, since your output is displayed "
+    "as-is to a consumer, not parsed or rendered from markdown. Use plain paragraph breaks "
+    "(a blank line) instead of headings or emphasis marks.\n"
+    "7. Never expose internal implementation details: no raw numeric scores, house numbers, "
+    "confidence percentages, variable names, engine names as code identifiers, or any other "
+    "technical/calculation artifact — translate all of it into natural language a non-technical "
+    "reader understands. Never repeat raw calculation steps back verbatim; synthesize them "
+    "into what they MEAN instead.\n"
+    "8. Never mention API errors, model names, HTTP statuses, rate limits, or any other "
+    "backend/technical failure — if something went wrong, that is handled entirely outside "
+    "of what you write; you only ever write as if the evidence you were given is all there is.\n"
+    "9. Be concise: a few short, well-chosen paragraphs beat an exhaustive one — this is a "
+    "consumer-facing summary, not a technical report."
 )
 
 _FRIENDLY_UNAVAILABLE = (
@@ -78,7 +103,11 @@ _FRIENDLY_UNAVAILABLE = (
     "this keeps happening."
 )
 _FRIENDLY_RATE_LIMITED = (
-    "⚠️ Lots of requests right now — please wait a few seconds and try again. "
+    "⚠️ AI is temporarily busy — please try again in a moment. "
+    "The calculated data above is still fully accurate in the meantime."
+)
+_FRIENDLY_CONFIG_ERROR = (
+    "⚠️ AI interpretation is currently unavailable — please check the AI configuration. "
     "The calculated data above is still fully accurate in the meantime."
 )
 
@@ -132,7 +161,7 @@ def _discover_models(api_key: str) -> list[str]:
     """Ask the API which models this key can actually use with generateContent.
     Returns bare model names (no 'models/' prefix), best candidate first."""
     try:
-        resp = requests.get(f"{API_BASE}", params={"key": api_key, "pageSize": 200}, timeout=15)
+        resp = requests.get(f"{API_BASE}", headers={"x-goog-api-key": api_key}, params={"pageSize": 200}, timeout=15)
         if resp.status_code != 200:
             log.warning("ListModels failed: HTTP %s %s", resp.status_code, resp.text[:300])
             return []
@@ -173,15 +202,19 @@ def _mark_model_bad(model: str):
 
 
 def _resolve_model(api_key: str, force_refresh: bool = False) -> str:
-    """The model actually used for calls. Explicit override wins; otherwise use
-    DEFAULT_MODEL if the key really has it (and it isn't known-bad), else the
-    best discovered alternative. Cached per process so we don't call ListModels
-    on every reading."""
+    """The model actually used for calls. Explicit override wins; otherwise
+    try Google's own stable alias (see STABLE_ALIAS) first, then
+    DEFAULT_MODEL if the key really has it (and it isn't known-bad), else
+    the best discovered alternative. Cached per process so we don't call
+    ListModels on every reading."""
     global _resolved_model
     override = _configured_model()
     if override:
         return override
     if _resolved_model and not force_refresh and _resolved_model not in _known_bad_models:
+        return _resolved_model
+    if STABLE_ALIAS not in _known_bad_models:
+        _resolved_model = STABLE_ALIAS
         return _resolved_model
 
     available = [m for m in _discover_models(api_key) if m not in _known_bad_models]
@@ -218,7 +251,12 @@ def _throttle():
 
 def _post_once(api_key: str, model: str, payload: dict):
     url = f"{API_BASE}/{model}:generateContent"
-    return requests.post(url, params={"key": api_key}, json=payload, timeout=TIMEOUT)
+    # Header-based auth (x-goog-api-key) per Google's current official API
+    # reference ("All requests to the Gemini API must include a
+    # x-goog-api-key header") — switched from query-param auth (?key=),
+    # which older/some third-party examples still show and which may be
+    # legacy-only rather than guaranteed going forward.
+    return requests.post(url, headers={"x-goog-api-key": api_key}, json=payload, timeout=TIMEOUT)
 
 
 def _post_with_fallback(api_key: str, payload: dict):
@@ -243,6 +281,19 @@ def _post_with_fallback(api_key: str, payload: dict):
     return resp
 
 
+_last_call_diagnostics: dict = {
+    "model": None, "latency_ms": None, "fallback_attempts": 0,
+    "outcome": None, "last_error": None, "request_id": None,
+}
+_request_counter = 0
+
+
+def get_last_call_diagnostics() -> dict:
+    """Developer Mode reads this — never shown to a regular user. Reflects
+    only the most recently completed _call(), reset on every new call."""
+    return dict(_last_call_diagnostics)
+
+
 def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900) -> str:
     """Routes every Gemini request through the multi-key manager: tries the
     current best key via _post_with_fallback() (which separately handles a
@@ -252,16 +303,36 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
     and the NEXT call skips it) and this retries once with whatever key
     the manager offers next — real failover, not just a single attempt
     before giving up."""
+    global _request_counter
+    _request_counter += 1
+    start_time = _time.monotonic()
+    _last_call_diagnostics.update({
+        "model": _resolved_model, "latency_ms": None, "fallback_attempts": 0,
+        "outcome": None, "last_error": None, "request_id": f"req-{_request_counter}",
+    })
+
+    def _finish(outcome: str, error: str | None = None):
+        _last_call_diagnostics["outcome"] = outcome
+        _last_call_diagnostics["last_error"] = error
+        _last_call_diagnostics["latency_ms"] = round((_time.monotonic() - start_time) * 1000)
+        _last_call_diagnostics["model"] = _resolved_model
+
     api_key = _get_api_key()
     if not api_key:
         log.error("No GEMINI_API_KEY configured — no AI readings will be generated.")
-        return _FRIENDLY_UNAVAILABLE
+        _finish("no_key_configured", "no API key")
+        return _FRIENDLY_CONFIG_ERROR
 
     _throttle()
     payload = {
         "contents": contents,
         "systemInstruction": {"parts": [{"text": system}]},
-        "generationConfig": {"temperature": 0.8, "maxOutputTokens": max_tokens},
+        # temperature/topP/topK are deprecated for the Gemini 3 model
+        # family (Google's own docs: "will ignore them entirely") — left
+        # out entirely rather than sent-and-ignored, since a future model
+        # generation may not be as forgiving about unrecognized/deprecated
+        # parameters.
+        "generationConfig": {"maxOutputTokens": max_tokens},
     }
     tried_keys = set()
     try:
@@ -269,6 +340,7 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
             if api_key in tried_keys:
                 break
             tried_keys.add(api_key)
+            _last_call_diagnostics["fallback_attempts"] = len(tried_keys) - 1
             resp = _post_with_fallback(api_key, payload)
 
             if resp.status_code == 429:
@@ -279,6 +351,7 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
                     log.info("Failing over to next available key.")
                     api_key = next_key
                     continue
+                _finish("rate_limited", "HTTP 429 on all configured keys")
                 return _FRIENDLY_RATE_LIMITED
 
             if resp.status_code in (401, 403):
@@ -289,13 +362,15 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
                 if next_key and next_key not in tried_keys:
                     api_key = next_key
                     continue
-                return _FRIENDLY_UNAVAILABLE
+                _finish("invalid_key", f"HTTP {resp.status_code} on all configured keys")
+                return _FRIENDLY_CONFIG_ERROR
 
             if resp.status_code != 200:
                 # Full detail to the server log (visible to the app owner in
                 # Streamlit Cloud's "Manage app" logs) — never to the end user.
                 log.error("Gemini HTTP %s (model in use: %r): %s",
                           resp.status_code, _resolved_model, resp.text[:500])
+                _finish("http_error", f"HTTP {resp.status_code}")
                 return _FRIENDLY_UNAVAILABLE
 
             key_manager.report_success("gemini", api_key)
@@ -303,18 +378,23 @@ def _call(contents: list, system: str = SYSTEM_GUARDRAILS, max_tokens: int = 900
             candidates = data.get("candidates", [])
             if not candidates:
                 log.error("Gemini returned no candidates. Response: %s", json.dumps(data)[:500])
+                _finish("no_candidates", "empty candidates list")
                 return _FRIENDLY_UNAVAILABLE
             parts = candidates[0].get("content", {}).get("parts", [])
             text = "".join(p.get("text", "") for p in parts)
             if not text.strip():
-                finish = candidates[0].get("finishReason")
-                log.error("Gemini returned empty text (finishReason=%s).", finish)
+                finish_reason = candidates[0].get("finishReason")
+                log.error("Gemini returned empty text (finishReason=%s).", finish_reason)
+                _finish("empty_text", f"finishReason={finish_reason}")
                 return _FRIENDLY_UNAVAILABLE
+            _finish("success")
             return text.strip()
 
+        _finish("all_keys_exhausted", "loop completed without a returned result")
         return _FRIENDLY_UNAVAILABLE  # every configured key was tried and failed
     except requests.exceptions.RequestException as e:
         log.error("Gemini request failed: %s", e)
+        _finish("network_error", str(e)[:200])
         return _FRIENDLY_UNAVAILABLE
 
 
@@ -419,19 +499,43 @@ def generate_unified_narrative(reading_type: str, unified_evidence: dict, questi
 
 def generate_unified_reading(reading_type: str, unified_evidence: dict,
                               question: str | None = None, language: str = "en") -> tuple[int | None, str, str]:
-    """ANUPT combined page: one call, returns (score, summary, details)."""
+    """ANUPT combined page: one call, returns (score, summary, details).
+    Structured so the fuller reading always works through each
+    contributing system's own answer first, then closes with a genuine
+    synthesis — never a single generic paragraph that blurs which system
+    said what, and never just a restatement of the raw evidence."""
+    systems_present = ["Astrology", "Numerology", "Tarot"]
+    if "palmistry" in unified_evidence:
+        systems_present.append("Palmistry")
+    systems_line = ", ".join(systems_present)
+
     prompt = (
         f"Reading type: {reading_type}.\n"
-        + (f"User's specific question: {question}\n" if question else "")
+        + (f"User's specific question: {question}\n" if question else
+           "The user asked for a general reading — use whatever timeframe the evidence itself "
+           "centers on (e.g. current dasha/transits, this year's numerology, today's cards).\n")
         + "Structured cross-system evidence — Astrology, Numerology, Tarot, and "
         "Palmistry when a palm reading is included (JSON):\n"
         + json.dumps(unified_evidence, indent=2, default=str)
+        + "\n\nYou are writing as an experienced astrologer/reader speaking directly to this "
+        "person — warm, direct, plain-spoken, never clinical or like a report. For every point "
+        "you raise: explain WHY it's indicated (what in the evidence points to it, in a sentence "
+        "a non-technical person immediately understands, not jargon), and offer ONE simple, "
+        "concrete, doable tip connected to it — something they could actually act on this week, "
+        "not vague platitudes like 'stay positive'. Do not pad the reading with generic "
+        "statements that could apply to anyone; every sentence should trace back to something "
+        "specific in the evidence above.\n"
         + _SPLIT_INSTRUCTION
-        + "\nThe fuller part should name which systems agree on each point you raise, "
-        "including the palm reading if 'palmistry' is present in the evidence."
+        + f"\n\nFor the fuller reading (the third part), structure it exactly as follows: first, "
+        f"one short paragraph EACH for {systems_line} — what that system specifically indicates "
+        f"for this question/timeframe, why, and one tip. Name the system at the start of its "
+        f"paragraph (e.g. 'Astrology suggests...'). Then close with a final short paragraph "
+        f"that genuinely synthesizes them — not a recap, but what emerges when you hold all of "
+        f"them together (where they reinforce each other, and where one adds nuance another "
+        f"doesn't cover)."
         + ("\nRespond entirely in Marathi (मराठी), not English." if language == "mr" else "")
     )
-    text = _call([_user_turn(prompt)], max_tokens=1200)
+    text = _call([_user_turn(prompt)], max_tokens=1400)
     return _split_score_summary_details(text)
 
 
@@ -491,6 +595,13 @@ def generate_engine_reading(engine_name: str, engine_data: dict, reading_type: s
             "reinterpret the raw positions as if this evidence didn't already exist."
             if has_rule_findings else ""
         )
+        + "\n\nYou are writing as an experienced astrologer/reader speaking directly to this "
+        "person — warm, direct, plain-spoken, never clinical. Explain WHY each point you raise "
+        "is indicated (what in the evidence points to it, in a sentence a non-technical person "
+        "immediately understands, not jargon), and offer ONE simple, concrete, doable tip "
+        "connected to it — something they could actually act on this week, not vague platitudes. "
+        "Do not pad the reading with generic statements that could apply to anyone; every "
+        "sentence should trace back to something specific in the evidence above."
         + _SPLIT_INSTRUCTION
         + ("\nRespond entirely in Marathi (मराठी), not English." if language == "mr" else "")
     )
@@ -510,7 +621,12 @@ def chat_reply(history: list, question: str, context_evidence: dict) -> str:
         contents.append({"role": turn["role"], "parts": [{"text": turn["text"]}]})
     context_prefix = (
         "Relevant structured evidence for this question (JSON):\n"
-        + json.dumps(context_evidence, indent=2, default=str) + "\n\nQuestion: "
+        + json.dumps(context_evidence, indent=2, default=str)
+        + "\n\nAnswer as an experienced astrologer speaking directly to this person — plain, "
+        "warm, conversational, a couple of sentences unless the question genuinely needs more. "
+        "Where relevant, briefly note WHY (what in the evidence points to it) and offer one "
+        "small, concrete thing they could actually do about it — not a vague platitude.\n\n"
+        "Question: "
     )
     contents.append(_user_turn(context_prefix + question))
     return _call(contents, max_tokens=700)

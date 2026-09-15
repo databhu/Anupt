@@ -113,3 +113,73 @@ class TestProfileEvidenceBuilder:
             profile = num.full_profile("Someone", date(year, 4, 21))
             evidence = interp.build_profile_evidence(profile)
             assert len(evidence["numbers"]) == 7
+
+
+class TestTranslatedMeanings:
+    """The Hindi/Marathi translation layer added on top of the canonical
+    English NUMBER_MEANINGS/KARMIC_DEBT_MEANINGS — engines.numerology's
+    own full_profile() output must stay untouched (English, canonical),
+    while interpret_number()'s DISPLAY text becomes language-aware."""
+
+    def test_default_language_is_english_unchanged(self):
+        entry = num._life_path_detailed(date(1995, 8, 8))
+        result = interp.interpret_number(entry, "Life Path")
+        assert "structure, discipline, reliability, hard work" in result["interpretation"]
+
+    def test_hindi_translation_used_when_requested(self):
+        entry = num._life_path_detailed(date(1995, 8, 8))  # value 4
+        result = interp.interpret_number(entry, "Life Path", lang="hi")
+        assert "संरचना" in result["interpretation"]  # "structure" in Hindi
+        assert "structure, discipline" not in result["interpretation"]
+
+    def test_marathi_translation_used_when_requested(self):
+        entry = num._life_path_detailed(date(1995, 8, 8))
+        result = interp.interpret_number(entry, "Life Path", lang="mr")
+        assert "रचना" in result["interpretation"]  # "structure" in Marathi
+
+    def test_master_number_clause_is_translated_too(self):
+        entry = num._life_path_detailed(date(1996, 11, 2))  # known Master Number 11
+        result = interp.interpret_number(entry, "Life Path", lang="hi")
+        assert "मास्टर नंबर" in result["interpretation"]
+        assert "Master Number" not in result["interpretation"]
+
+    def test_karmic_debt_clause_is_translated_too(self):
+        entry = num._life_path_detailed(date(1900, 1, 8))  # known Karmic Debt 19
+        result = interp.interpret_number(entry, "Life Path", lang="mr")
+        assert "कर्म ऋण" in result["interpretation"]
+        assert "Karmic Debt" not in result["interpretation"]
+
+    def test_every_core_number_value_has_a_working_translation(self):
+        for value in [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 22, 33]:
+            for lang in ["hi", "mr"]:
+                result = interp.translated_number_meaning(value, lang)
+                assert result.strip() != "", f"{value}/{lang}"
+
+    def test_every_karmic_debt_value_has_a_working_translation(self):
+        for kd in [13, 14, 16, 19]:
+            for lang in ["hi", "mr"]:
+                result = interp.translated_karmic_debt_meaning(kd, lang)
+                assert result.strip() != "", f"{kd}/{lang}"
+
+    def test_unsupported_language_falls_back_to_english(self):
+        result = interp.translated_number_meaning(4, "fr")
+        assert result == num.NUMBER_MEANINGS[4]
+
+    def test_untranslated_value_falls_back_to_english(self):
+        # A value with no Hindi/Marathi entry (e.g. an out-of-range number)
+        # should fall back to whatever engines.numerology has, not crash.
+        result = interp.translated_number_meaning(99, "hi")
+        assert result == num.NUMBER_MEANINGS.get(99, "")
+
+    def test_build_profile_evidence_threads_language_through(self):
+        profile = num.full_profile("Test User", date(1995, 8, 8))
+        evidence_hi = interp.build_profile_evidence(profile, lang="hi")
+        life_path_entry = next(n for n in evidence_hi["numbers"] if n["context_label"] == "Life Path")
+        assert "संरचना" in life_path_entry["interpretation"]
+
+    def test_backward_compatible_default_still_works_without_lang_arg(self):
+        # Existing callers that never pass lang= must be unaffected.
+        profile = num.full_profile("Test User", date(1995, 8, 8))
+        evidence = interp.build_profile_evidence(profile)
+        life_path_entry = next(n for n in evidence["numbers"] if n["context_label"] == "Life Path")
+        assert "structure" in life_path_entry["interpretation"]

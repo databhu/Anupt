@@ -46,8 +46,8 @@ class TestCallLevelFailover:
 
         calls = []
 
-        def fake_post(url, params=None, **kw):
-            key = params.get("key")
+        def fake_post(url, headers=None, **kw):
+            key = headers.get("x-goog-api-key")
             calls.append(key)
             if key == "primarykey12345":
                 return _response(429, {"error": "rate limited"})
@@ -63,8 +63,8 @@ class TestCallLevelFailover:
         monkeypatch.setenv("GEMINI_API_KEY", "invalidkey1234")
         monkeypatch.setenv("GEMINI_API_KEY_2", "validkey123456")
 
-        def fake_post(url, params=None, **kw):
-            return _response(401, {}) if params.get("key") == "invalidkey1234" else _response(200, _OK_BODY)
+        def fake_post(url, headers=None, **kw):
+            return _response(401, {}) if headers.get("x-goog-api-key") == "invalidkey1234" else _response(200, _OK_BODY)
 
         with patch("requests.post", side_effect=fake_post):
             result = gc._call([{"role": "user", "parts": [{"text": "hi"}]}])
@@ -107,13 +107,16 @@ class TestCallLevelFailover:
         assert result == "A real reading."
         assert mock_post.call_count == 1
 
-    def test_no_keys_configured_returns_friendly_message(self, monkeypatch):
+    def test_no_keys_configured_returns_friendly_config_error(self, monkeypatch):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         for i in range(2, 11):
             monkeypatch.delenv(f"GEMINI_API_KEY_{i}", raising=False)
         with patch("requests.post") as mock_post:
             result = gc._call([{"role": "user", "parts": [{"text": "hi"}]}])
-        assert result == gc._FRIENDLY_UNAVAILABLE
+        # A missing key is a CONFIGURATION problem, not a transient service
+        # issue — it gets its own distinct message so the app owner can
+        # tell "needs a fix" apart from "will resolve itself shortly".
+        assert result == gc._FRIENDLY_CONFIG_ERROR
         mock_post.assert_not_called()
 
     def test_three_keys_all_rate_limited_in_sequence_then_succeeds(self, monkeypatch):
@@ -123,8 +126,8 @@ class TestCallLevelFailover:
         monkeypatch.setenv("GEMINI_API_KEY_2", "keytwo12345678")
         monkeypatch.setenv("GEMINI_API_KEY_3", "keythree1234567")
 
-        def fake_post(url, params=None, **kw):
-            key = params.get("key")
+        def fake_post(url, headers=None, **kw):
+            key = headers.get("x-goog-api-key")
             if key in ("keyone12345678", "keytwo12345678"):
                 return _response(429, {})
             return _response(200, _OK_BODY)
